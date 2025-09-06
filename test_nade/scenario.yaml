@@ -1,18 +1,13 @@
-bearer:
-  mtu: 256
-  type: loopback
-duration_ms: 5000
-left_nade:
-  mode: byte
-  peer_pub: 0a60af9fe8854e881d52685bfd58a1eca13b260efe179f7e5fd860062735345c
-  side: left
-  static_key: e8553c171888abffc3a71fdc62884bc53095b75e6c82eb848245b8693e9e3c73
-  static_pub: 5ce465f91293c8bc1ae77b97e391b414220750ca4e95e92e956756767312a71e
 mode: byte
-name: auto_generated_mode_a
-right_nade:
-  mode: byte
-  peer_pub: 5ce465f91293c8bc1ae77b97e391b414220750ca4e95e92e956756767312a71e
-  side: right
-  static_key: 000379493cde0aebd46ad649c857b5dbea52418d89b3c542fb31a3952a0ddb5a
-  static_pub: 0a60af9fe8854e881d52685bfd58a1eca13b260efe179f7e5fd860062735345c
+duration_ms: 15000
+seed: 7
+
+bearer:
+  type: telco_volte_evs
+  latency_ms: 60
+  jitter_ms: 20
+  loss_rate: 0.03
+  reorder_rate: 0.01
+  ge_p_good_bad: 0.001
+  ge_p_bad_good: 0.1
+  mtu_bytes: 96
