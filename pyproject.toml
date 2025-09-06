@@ -10,8 +10,11 @@ authors = [{name="Florian Griffon"}]
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "cryptography",
-    "numpy"
+    "cryptography>=45.0.0",
+    "numpy>=2.3.0",
+    "dissononce>=0.34.3",
+    "PyYAML>=6.0",
+    "cffi>=1.17.0"
 ]
 
 [tool.setuptools.packages.find]
