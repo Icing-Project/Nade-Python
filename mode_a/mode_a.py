@@ -25,17 +25,16 @@ class NadeByteLink:
 
         dh = X25519DH()
         self.local_kp = local_kp or dh.generate_keypair()
-
-        if peer_pub is not None and not isinstance(peer_pub, PublicKey):
-            peer_pub = PublicKey(peer_pub)
         self.peer_pub = peer_pub
 
         self.is_initiator = (self.side == "left")
         self.noise = NoiseXKWrapper(self.local_kp, self.peer_pub, self.debug)
 
+        # handshake state
         self.handshake_started = False
         self.handshake_done = False
 
+        # TX/RX state
         self.tx_seq = 0
         self.rx_seen = set()
         self.rx_order: Deque[int] = deque(maxlen=self.RX_WINDOW_SIZE)
