@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nade-python"
+version = "0.0.1"
+description = "Nade Protocol prototype (Python)"
+authors = [{name="Florian Griffon"}]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "cryptography",
+    "numpy"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mode_a*", "nade_adapter*"]
