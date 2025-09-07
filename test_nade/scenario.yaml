@@ -1,4 +1,4 @@
-mode: byte
+mode: block
 duration_ms: 15000
 seed: 7
 
