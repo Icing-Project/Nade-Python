@@ -14,14 +14,12 @@ dependencies = [
     "numpy>=2.3.3",
     "dissononce>=0.34.3",
     "PyYAML>=6.0",
-    "cffi>=1.17.0"
+    "cffi>=1.17.0",
 ]
 
 [tool.setuptools]
-# you have a package AND a standalone module
-py-modules = ["nade_adapter"]     # include the top-level module too
 include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["nade/*"]
+include = ["nade*"]
