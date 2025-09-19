@@ -1,7 +1,7 @@
 # nade/__init__.py
-from .mode_a import NadeByteLink
-from .mode_b import NadeAudioPort
-from .nade_adapter import Adapter
+from nade.modes.mode_a import NadeByteLink
+from nade.modes.mode_b import NadeAudioPort
+from nade.adapter.drybox_adapter import Adapter
 
 __all__ = [
     "NadeByteLink",
