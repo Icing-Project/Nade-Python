@@ -96,64 +96,51 @@ class _MockByteLink:
         return items
 
 
-class _MockAudioPort:
-    """
-    Audio mock endpoint.
-    - pull_tx_block: renvoie un bloc de silence 160 échantillons @ 8kHz (int16)
-    - push_rx_block: no-op (placeholder)
-    - API DryBox attendue:
-        pull_tx_block(t_ms) -> np.ndarray[int16] length 160
-        push_rx_block(pcm, t_ms)
-        on_timer(t_ms)
-    """
-
-    SR = 8000
-    BLK = 160
-
-    def __init__(self, emit_event):
-        if np is None:
-            raise RuntimeError("numpy is required for audio mode")
-        self.emit_event = emit_event
-        self._z = np.zeros(self.BLK, dtype=np.int16)
-
-    def pull_tx_block(self, t_ms: int):
-        return self._z
-
-    def push_rx_block(self, pcm, t_ms: int) -> None:
-        # Hook PLC/FEC/modem/Noise layer ici plus tard
-        self.emit_event(
-            "info",
-            f"[MockAudioPort] Received RX block at {t_ms} ms (len={len(pcm) if pcm is not None else 'None'})",
-        )
-        pass
-
-    def on_timer(self, t_ms: int) -> None:
-        pass
-
-
 class _NadeAudioPort:
     SR = 8000
     BLK = 160
 
-    def __init__(self, emit_event):
-        self.emit_event = emit_event
-        self.stack = AudioStack(modem="4fsk", logger=self._log)
+    def __init__(self, emit_event, nade_cfg: dict | None = None):
+        self.emit_event = emit_event  # emit_event(type, payload)
+        modem_cfg = (nade_cfg or {}).get("modem_cfg") or {}
+        modem_name = (nade_cfg or {}).get("modem", "4fsk")
+        self.stack = AudioStack(modem=modem_name, modem_cfg=modem_cfg, logger=self._logger)
 
-    def _log(self, level: str, msg: str):
-        self.emit_event(level, msg)
+    def _logger(self, level: str, payload: Any):
+        # Unifie: niveau texte -> "log", objets -> "metric"
+        if level == "metric" and isinstance(payload, dict):
+            self.emit_event("metric", payload)  # le runner peut mapper vers metrics.csv
+        elif isinstance(payload, str):
+            self.emit_event("log", {"level": "info", "msg": payload})
+        else:
+            self.emit_event("log", {"level": str(level), "msg": str(payload)})
 
     def pull_tx_block(self, t_ms: int):
-        return self.stack.pull_tx_block(t_ms)
+        blk = self.stack.pull_tx_block(t_ms)
+        # capture optionnelle (ex: symboles non dispo → on garde PCM)
+        # self.emit_event("capture", {"layer": "bearer", "event": "tx", "pcm_i16_le": blk.tobytes().hex()})
+        return blk
 
     def push_rx_block(self, pcm, t_ms: int) -> None:
         self.stack.push_rx_block(pcm, t_ms)
-        # Si un texte arrive, on le log
         texts = self.stack.pop_received_texts()
         for txt in texts:
-            self.emit_event("info", f"[Nade] RX TEXT: {txt}")
+            # Deux events: un log humain + un event structuré "text_rx"
+            self.emit_event("log", {"level": "info", "msg": f"[Nade] RX TEXT: {txt}"})
+            self.emit_event("text_rx", {"text": txt})
 
     def on_timer(self, t_ms: int) -> None:
         self.stack.on_timer(t_ms)
+
+    # Contrôle runtime: reconfig/modem, injection texte, etc.
+    def control(self, cmd: dict) -> None:
+        if "send_text" in cmd:
+            self.stack.queue_text(str(cmd["send_text"]))
+            self.emit_event("text_tx", {"text": str(cmd["send_text"])})
+        if "modem_cfg" in cmd:
+            self.stack.reconfigure(modem_cfg=cmd["modem_cfg"])
+            self.emit_event("log", {"level": "info", "msg": f"Audio modem reconfigured: {cmd['modem_cfg']}"})
+
 
 class Adapter:
     """
@@ -188,21 +175,21 @@ class Adapter:
 
     # ---- lifecycle ----
     def init(self, cfg: dict) -> None:
-        # Runner passe: tick_ms, side, seed, mode, sdu_max_bytes, out_dir, crypto
         self.cfg = cfg or {}
         self.side = self.cfg.get("side", "L")
-        self.mode = self.cfg.get("mode", "audio")  # DryBox v1 met "audio" par défaut
+        self.mode = self.cfg.get("mode", "audio")
         self.crypto = self.cfg.get("crypto", {}) or {}
+        self.nade_cfg = self.cfg.get("nade", {}) or {}  # << NEW (modem, modem_cfg)
 
     def start(self, ctx: Any) -> None:
         self.ctx = ctx
         if self.mode == "audio":
-            self._audio = _NadeAudioPort(self.ctx.emit_event)
-
-            # Démo: côté initiateur, on enfile un message au démarrage
-            if self.side == "L":
-                self._audio.stack.queue_text("Hello from L (4-FSK)")
-
+            self._audio = _NadeAudioPort(self.ctx.emit_event, self.nade_cfg)
+            # Option démo: message auto si demandé par config
+            # auto = (self.nade_cfg or {}).get("auto_text")
+            # if auto and isinstance(auto, str):
+            #     self._audio.control({"send_text": auto})
+            self._audio.control({"send_text": "Hello from Nade-Python Audio mode!"})
         else:
             self._byte = _MockByteLink(
                 side=self.side,
