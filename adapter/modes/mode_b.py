@@ -1,7 +1,7 @@
 import numpy as np
 from dissononce.dh.keypair import KeyPair
 from dissononce.dh.x25519.public import PublicKey
-from nade.core.noise_wrapper import NoiseXKWrapper
+from nade.crypto.noise_wrapper import NoiseXKWrapper
 
 # ------------------------------------------------------------------
 # Audio parameters (DryBox defaults)

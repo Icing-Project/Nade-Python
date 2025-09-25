@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import deque
 from typing import Any, Deque, List, Optional, Tuple
-from nade.core.audio import AudioStack
+from nade.audio import AudioStack
 
 try:
     import numpy as np
