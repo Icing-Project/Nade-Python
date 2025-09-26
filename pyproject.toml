@@ -23,3 +23,10 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["nade*", "adapter*"]
+
+[project.entry-points."drybox.adapters"]
+nade-python = "nade.adapter.drybox_adapter:Adapter"
+
+# (optionnel selon runner)
+[project.entry-points."nade.dev"]
+nade = "nade.nade:StateMachine"
