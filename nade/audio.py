@@ -4,11 +4,12 @@ from typing import Optional, Dict, Any, Type, Callable, List
 import numpy as np
 
 from .modems.imodem import IModem, ModemConfig, BackpressurePolicy
-from .modems.fsk4 import FourFSKModem
+from .modems.cpfsk import LiquidBFSKModem, LiquidFourFSKModem
 
 # registry
 _MODEMS: dict[str, Type[IModem]] = {
-    "4fsk": FourFSKModem,
+    "bfsk": LiquidBFSKModem,
+    "4fsk": LiquidFourFSKModem,
 }
 
 class AudioStack:
