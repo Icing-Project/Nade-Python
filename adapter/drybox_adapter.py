@@ -1,4 +1,3 @@
-# nade/adapter/drybox_adapter.py
 # DryBox v1-compatible adapter for Nade-Python
 # - Zero-arg __init__ (runner instantiates with cls())
 # - init(cfg) to receive side/mode/crypto
@@ -24,139 +23,39 @@ HANDSHAKE_TAG = 0x20
 SDU_MAX_BYTES = 1024
 
 
-class _MockByteLink:
+def _merged_nade_cfg(base: dict | None) -> dict:                                    # TODO: remove when switching to DryBox controls OR effective statemachine
+    """Merge base nade cfg with optional JSON in NADE_ADAPTER_CFG.
+    Keeps behavior identical to previous inline merge (shallow update, best-effort).
     """
-    ByteLink mock endpoint.
-    - Simple 2-way handshake (TAG + "HS1"/"HS2") pour synchroniser les deux bouts.
-    - Pas de chiffrement réel (pass-through). Sert de squelette pour brancher Noise plus tard.
-    - API DryBox attendue:
-        on_timer(t_ms)
-        poll_link_tx(budget) -> List[bytes] | List[Tuple[bytes,int]]
-        on_link_rx(sdu: bytes)
-    """
-
-    def __init__(self, side: str, key_id: Optional[str] = None, peer_key_id: Optional[str] = None):
-        # Runner fournit "L" ou "R"
-        self.side = side  # "L"/"R"
-        self.is_initiator = (self.side == "L")  # convention: L initie
-        self.key_id = key_id
-        self.peer_key_id = peer_key_id
-
-        self._t_ms = 0
-        self._started = False
-        self._done = False
-
-        self._txq: Deque[Tuple[bytes, int]] = deque()
-        self._rx_plain: Deque[bytes] = deque()
-
-    # ---- DryBox hooks ----
-    def on_timer(self, t_ms: int) -> None:
-        self._t_ms = t_ms
-        if not self._started:
-            self._started = True
-            # L initie: envoie HS1
-            if self.is_initiator:
-                payload = b"HS1"
-                self._txq.append((bytes([HANDSHAKE_TAG]) + payload, self._t_ms))
-
-    def poll_link_tx(self, budget: int) -> List[Tuple[bytes, int]]:
-        out: List[Tuple[bytes, int]] = []
-        while self._txq and len(out) < budget:
-            out.append(self._txq.popleft())
-        return out
-
-    def on_link_rx(self, sdu: bytes) -> None:
-        if not sdu:
-            return
-        # Handshake message?
-        if sdu[0] == HANDSHAKE_TAG:
-            hs = sdu[1:]
-            if hs == b"HS1":
-                # Répond HS2 côté récepteur; handshake complet des deux côtés
-                if not self._done:
-                    self._txq.append((bytes([HANDSHAKE_TAG]) + b"HS2", self._t_ms))
-                    self._done = True
-            elif hs == b"HS2":
-                # Initiateur reçoit l'ACK → done
-                self._done = True
-            return
-
-        # Donnée normale (pass-through plaintext)
-        if self._done:
-            self._rx_plain.append(sdu)
-
-    # ---- Helpers applicatifs (si nécessaire plus tard) ----
-    def app_send_plain(self, data: bytes) -> None:
-        if not self._done:
-            return  # ignorer tant que handshake non terminé
-        # Pas de chiffrement → SDU = data (tu brancheras Noise ici ensuite)
-        self._txq.append((data, self._t_ms))
-
-    def app_recv_all(self) -> List[bytes]:
-        items = list(self._rx_plain)
-        self._rx_plain.clear()
-        return items
+    cfg: dict = (base or {}).copy()
+    try:
+        env_cfg = os.environ.get("NADE_ADAPTER_CFG")
+        if env_cfg:
+            parsed = json.loads(env_cfg)
+            if isinstance(parsed, dict):
+                cfg.update(parsed)
+    except Exception:
+        # Preserve previous silent-fail behavior
+        pass
+    return cfg
 
 
-class _NadeAudioPort:
-    SR = 8000
-    BLK = 160
-
-    def __init__(self, emit_event, nade_cfg: dict | None = None):
-        self.emit_event = emit_event  # emit_event(type, payload)
-        modem_cfg = (nade_cfg or {}).get("modem_cfg") or {}
-        # Use a conservative default (bfsk @ 80 sps) for initial audio smoke tests.
-        # Can be overridden via nade_cfg["modem"].
-        modem_name = (nade_cfg or {}).get("modem", "bfsk")
-        self.stack = AudioStack(modem=modem_name, modem_cfg=modem_cfg, logger=self._logger)
-
-    def _logger(self, level: str, payload: Any):
-        # Unifie: niveau texte -> "log", objets -> "metric"
-        if level == "metric" and isinstance(payload, dict):
-            self.emit_event("metric", payload)  # le runner peut mapper vers metrics.csv
-        elif isinstance(payload, str):
-            self.emit_event("log", {"level": "info", "msg": payload})
-        else:
-            self.emit_event("log", {"level": str(level), "msg": str(payload)})
-
-    def pull_tx_block(self, t_ms: int):
-        blk = self.stack.pull_tx_block(t_ms)
-        # capture optionnelle (ex: symboles non dispo → on garde PCM)
-        # self.emit_event("capture", {"layer": "bearer", "event": "tx", "pcm_i16_le": blk.tobytes().hex()})
-        return blk
-
-    def push_rx_block(self, pcm, t_ms: int) -> None:
-        self.stack.push_rx_block(pcm, t_ms)
-        texts = self.stack.pop_received_texts()
-        for txt in texts:
-            # Deux events: un log humain + un event structuré "text_rx"
-            self.emit_event("log", {"level": "info", "msg": f"[Nade] RX TEXT: {txt}"})
-            self.emit_event("text_rx", {"text": txt})
-
-    def on_timer(self, t_ms: int) -> None:
-        self.stack.on_timer(t_ms)
-
-    # Contrôle runtime: reconfig/modem, injection texte, etc.
-    def control(self, cmd: dict) -> None:
-        if "send_text" in cmd:
-            self.stack.queue_text(str(cmd["send_text"]))
-            self.emit_event("text_tx", {"text": str(cmd["send_text"])})
-        if "modem_cfg" in cmd:
-            self.stack.reconfigure(modem_cfg=cmd["modem_cfg"])
-            self.emit_event("log", {"level": "info", "msg": f"Audio modem reconfigured: {cmd['modem_cfg']}"})
+def _auto_text(nade_cfg: dict | None) -> str:
+    """Return demo text, unchanged behavior (prefer nade_cfg['auto_text'] if str)."""
+    auto = (nade_cfg or {}).get("auto_text")
+    return auto if isinstance(auto, str) else "Hello from Nade-Python Audio mode!"
 
 
 class Adapter:
     """
-    DryBox adapter (v1) pour Nade.
-    Compatible avec le Runner:
-      - __init__() sans arguments
-      - init(cfg: dict)  ← reçoit side/mode/crypto/...
-      - start(ctx)       ← reçoit AdapterCtx (now_ms(), emit_event(), rng, config)
-      - stop()
-      - Byte mode: on_timer, poll_link_tx, on_link_rx
-      - Audio mode: pull_tx_block, push_rx_block
+    DryBox adapter (v1) for Nade.
+    __init__(): zero-arg constructor
+    init(cfg): receive side/mode/crypto (and nade cfg)
+    start(ctx): receive AdapterCtx (now_ms(), emit_event(), rng, config)
+    Byte mode: minimal handshake + SDU pass-through mock (no crypto)
+    Audio mode: uses AudioStack (8k/160) and emits text/log/metric events
     """
+
 
     def __init__(self):
         self.cfg: dict = {}
@@ -164,8 +63,13 @@ class Adapter:
         self.mode: str = "byte"
         self.side: str = "L"  # "L"/"R" fourni par runner
         self.crypto: dict = {}
-        self._byte: Optional[_MockByteLink] = None
-        self._audio: Optional[_NadeAudioPort] = None
+        # ByteLink state (mock)
+        self._byte_started: bool = False
+        self._byte_done: bool = False
+        self._byte_t_ms: int = 0
+        self._byte_txq: Deque[Tuple[bytes, int]] = deque()
+        # Audio state
+        self._audio_stack: Optional[AudioStack] = None
 
     # ---- capabilities (runner les lit avant de démarrer l’I/O) ----
     def nade_capabilities(self) -> dict:
@@ -183,67 +87,93 @@ class Adapter:
         self.side = self.cfg.get("side", "L")
         self.mode = self.cfg.get("mode", "audio")
         self.crypto = self.cfg.get("crypto", {}) or {}
-        # Base config (can be provided by the runner in future)
-        nade_cfg = self.cfg.get("nade", {}) or {}
-        # Optional env override for quick local sweeps: NADE_ADAPTER_CFG='{"modem":"bfsk","modem_cfg":{...}}'
-        try:
-            env_cfg = os.environ.get("NADE_ADAPTER_CFG")
-            if env_cfg:
-                nade_cfg_env = json.loads(env_cfg)
-                if isinstance(nade_cfg_env, dict):
-                    nade_cfg.update(nade_cfg_env)
-        except Exception:
-            pass
-        self.nade_cfg = nade_cfg
+        # Base config plus optional env override: NADE_ADAPTER_CFG='{"modem":"bfsk","modem_cfg":{...}}'
+        self.nade_cfg = _merged_nade_cfg(self.cfg.get("nade", {}) or {})
 
     def start(self, ctx: Any) -> None:
         self.ctx = ctx
         if self.mode == "audio":
-            self._audio = _NadeAudioPort(self.ctx.emit_event, self.nade_cfg)
-            # Option demo: auto-send message if provided in config
-            auto = (self.nade_cfg or {}).get("auto_text")
-            msg = None
-            if auto and isinstance(auto, str):
-                msg = auto
-            else:
-                msg = "Hello from Nade-Python Audio mode!"
-            self._audio.control({"send_text": msg})
+            modem_cfg = (self.nade_cfg or {}).get("modem_cfg") or {}
+            modem_name = (self.nade_cfg or {}).get("modem", "bfsk")
+            self._audio_stack = AudioStack(modem=modem_name, modem_cfg=modem_cfg, logger=self._audio_logger)
+            # auto-send demo text
+            msg = _auto_text(self.nade_cfg)
+            self._audio_stack.queue_text(msg)
+            self.ctx.emit_event("text_tx", {"text": msg})
         else:
-            self._byte = _MockByteLink(
-                side=self.side,
-                key_id=self.crypto.get("key_id"),
-                peer_key_id=self.crypto.get("peer_key_id"),
-            )
+            # reset byte-link state
+            self._byte_started = False
+            self._byte_done = False
+            self._byte_t_ms = 0
+            self._byte_txq.clear()
 
     def stop(self) -> None:
         pass
 
     # ---- timers ----
     def on_timer(self, t_ms: int) -> None:
-        if self._byte:
-            self._byte.on_timer(t_ms)
-        if self._audio:
-            self._audio.on_timer(t_ms)
+        if self.mode != "audio":
+            # ByteLink mock timer
+            self._byte_t_ms = t_ms
+            if not self._byte_started:
+                self._byte_started = True
+                if self.side == "L":  # initiator sends HS1
+                    self._byte_txq.append((bytes([HANDSHAKE_TAG]) + b"HS1", self._byte_t_ms))
+        else:
+            if self._audio_stack is not None:
+                self._audio_stack.on_timer(t_ms)
 
     # ---- ByteLink I/O ----
     def poll_link_tx(self, budget: int):
-        if not self._byte:
+        if self.mode == "audio":
             return []
-        return self._byte.poll_link_tx(budget)
+        out: List[Tuple[bytes, int]] = []
+        while self._byte_txq and len(out) < budget:
+            out.append(self._byte_txq.popleft())
+        return out
 
     def on_link_rx(self, sdu: bytes):
-        if self._byte:
-            self._byte.on_link_rx(sdu)
+        if self.mode == "audio" or not sdu:
+            return
+        if sdu[0] == HANDSHAKE_TAG:
+            hs = sdu[1:]
+            if hs == b"HS1":
+                if not self._byte_done:
+                    self._byte_txq.append((bytes([HANDSHAKE_TAG]) + b"HS2", self._byte_t_ms))
+                    self._byte_done = True
+            elif hs == b"HS2":
+                self._byte_done = True
+            return
+        if self._byte_done:
+            # Plaintext passthrough; previously queued internally but never used externally
+            # Keep behavior no-op for external surfaces
+            pass
 
     # ---- AudioBlock I/O ----
     def pull_tx_block(self, t_ms: int):
-        if not self._audio:
-            # fallback silencieux si audio non actif
-            if np is None:
-                return None
-            return np.zeros(160, dtype=np.int16)
-        return self._audio.pull_tx_block(t_ms)
+        if self._audio_stack is not None:
+            blk = self._audio_stack.pull_tx_block(t_ms)
+            # Optional capture hook kept disabled (behavior unchanged)
+            return blk
+        # silent fallback if audio not active
+        if np is None:
+            return None
+        return np.zeros(160, dtype=np.int16)
 
     def push_rx_block(self, pcm, t_ms: int):
-        if self._audio:
-            self._audio.push_rx_block(pcm, t_ms)
+        if self._audio_stack is None:
+            return
+        self._audio_stack.push_rx_block(pcm, t_ms)
+        texts = self._audio_stack.pop_received_texts()
+        for txt in texts:
+            self.ctx.emit_event("log", {"level": "info", "msg": f"[Nade] RX TEXT: {txt}"})
+            self.ctx.emit_event("text_rx", {"text": txt})
+
+    # ---- logger for AudioStack ----
+    def _audio_logger(self, level: str, payload: Any) -> None:
+        if level == "metric" and isinstance(payload, dict):
+            self.ctx.emit_event("metric", payload)
+        elif isinstance(payload, str):
+            self.ctx.emit_event("log", {"level": "info", "msg": payload})
+        else:
+            self.ctx.emit_event("log", {"level": str(level), "msg": str(payload)})
