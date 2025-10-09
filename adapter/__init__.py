@@ -1,5 +1,5 @@
-from .modes.mode_a import NadeByteLink
-from .modes.mode_b import NadeAudioPort
+from nade.modes.mode_a import NadeByteLink
+from nade.modes.mode_b import NadeAudioPort
 from .drybox_adapter import Adapter
 
 __all__ = [
