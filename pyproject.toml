@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nade-python"
-version = "0.0.1"
+version = "0.0.2"
 description = "Nade Protocol (Noise-Authenticated Duplex Encryption) Python Implementation - Including the DryBox Adapter"
 authors = [{name="Florian Griffon"}, {name="Icing Project"}, {name="STCB"}]
 readme = "README.md"
