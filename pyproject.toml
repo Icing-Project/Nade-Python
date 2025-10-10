@@ -27,6 +27,8 @@ where = ["."]
 include = ["nade", "adapter"]
 
 [project.entry-points."drybox.adapters"]
+# DryBox v1 currently loads adapters via module path specs (path/to/file.py:Class).
+# Keep entry point for future discovery compatibility, pointing to the actual module path.
 nade-python = "adapter.drybox_adapter:Adapter"
 
 # (optionnel selon runner)
