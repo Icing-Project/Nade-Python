@@ -121,7 +121,7 @@ class Adapter:
                     self._byte_txq.append((bytes([HANDSHAKE_TAG]) + b"HS1", self._byte_t_ms))
         else:
             if self._audio_stack is not None:
-                self._audio_stack.on_timer(t_ms)
+                pass
 
     # ---- ByteLink I/O ----
     def poll_link_tx(self, budget: int):

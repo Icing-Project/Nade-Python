@@ -52,8 +52,6 @@ class AudioStack:
     def push_rx_block(self, pcm: np.ndarray, t_ms: int) -> None:
         self.modem.push_rx_block(pcm, t_ms)
 
-    def on_timer(self, t_ms: int) -> None:
-        self.modem.on_timer(t_ms)
 
     # ---- byte API -----------------------------------------------------------
     def tx_enqueue(self, frame: bytes) -> bool:
