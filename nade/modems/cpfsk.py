@@ -164,9 +164,13 @@ class _BitBucket:
 
 
 class LiquidFSKModem(IModem):
-    """Liquid-dsp-backed M-FSK modem (supports B/4-FSK via runtime parameters)."""
+    """
+    Liquid-dsp-backed M-FSK modem (supports B/4-FSK via runtime parameters).
 
-    DEFAULT_SPS: int = 40
+    Single IModem implementation of Liquid FSK, configurable for 2-FSK (BFSK) or 4-FSK.
+    """
+
+    DEFAULT_SPS: int = 40  # samples per symbol, == SR * symbol_duration, e.g. 40 @ 8kHz for 5ms symbols
     DEFAULT_BANDWIDTH: float = 0.18  # normalized (0, 0.5)
     DEFAULT_CARRIER_HZ: float = 1200.0
     DEFAULT_AMPLITUDE: int = 9000
@@ -654,12 +658,3 @@ class LiquidBFSKModem(LiquidFSKModem):
         super().__init__(cfg=cfg, logger=logger, **params)
 
 
-class LiquidFourFSKModem(LiquidFSKModem):
-    def __init__(self, cfg: Optional[ModemConfig] = None,
-                 logger: Optional[Callable[[str, object], None]] = None,
-                 **params: object) -> None:
-        params.setdefault("bits_per_symbol", 2)
-        params.setdefault("samples_per_symbol", 40)
-        params.setdefault("bandwidth", 0.18)
-        params.setdefault("carrier_hz", 1300.0)
-        super().__init__(cfg=cfg, logger=logger, **params)

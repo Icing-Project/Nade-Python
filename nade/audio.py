@@ -4,7 +4,8 @@ from typing import Optional, Dict, Any, Type, Callable, List
 import numpy as np
 
 from .modems.imodem import IModem, ModemConfig, BackpressurePolicy
-from .modems.cpfsk import LiquidBFSKModem, LiquidFourFSKModem
+from .modems.cpfsk import LiquidBFSKModem
+from .modems.fsk4 import LiquidFourFSKModem
 
 # registry
 _MODEMS: dict[str, Type[IModem]] = {
@@ -33,7 +34,7 @@ class AudioStack:
         mc = self._mk_modem_config(cfg_dict)
         # pass through modem-specific params (tones/sps/amp/…)
         modem_specific = {k: v for k, v in cfg_dict.items()
-                          if k not in {"sample_rate_hz", "block_size", "max_tx_frames",
+                          if k not in {"sample_rate_hz", "block_size", "max_tx_frames", # TODO: The config sucks, it should be properly defined and importable above and below this function
                                        "max_rx_frames", "backpressure", "abi_version"}}
         self.modem: IModem = cls(cfg=mc, logger=self.logger, **modem_specific)  # type: ignore[arg-type]
         self.modem_name = name.lower()
