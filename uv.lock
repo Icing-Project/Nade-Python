@@ -147,7 +147,7 @@ wheels = [
 
 [[package]]
 name = "nade-python"
-version = "0.0.1"
+version = "0.0.2"
 source = { editable = "." }
 dependencies = [
     { name = "cffi" },
