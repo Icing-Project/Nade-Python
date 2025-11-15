@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nade-python"
-version = "0.0.1"
-description = "Nade Protocol prototype (Python)"
+version = "0.0.2"
+description = "Nade Protocol (Noise-Authenticated Duplex Encryption) Python Implementation - Including the DryBox Adapter"
 authors = [{name="Florian Griffon"}, {name="Icing Project"}, {name="STCB"}]
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,8 @@ dependencies = [
     "dissononce>=0.34.3",
     "PyYAML>=6.0",
     "cffi>=1.17.0",
+    "liquid-dsp>=1.6.0",
+    "pytest>=8.3.3",
 ]
 
 [tool.setuptools]
@@ -22,4 +24,13 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["nade*"]
+include = ["nade", "adapter"]
+
+[project.entry-points."drybox.adapters"]
+# DryBox v1 currently loads adapters via module path specs (path/to/file.py:Class).
+# Keep entry point for future discovery compatibility, pointing to the actual module path.
+nade-python = "adapter.drybox_adapter:Adapter"
+
+# (optionnel selon runner)
+[project.entry-points."nade.dev"]
+nade = "nade.nade:StateMachine"
