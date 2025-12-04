@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, Type, Callable, List
 import numpy as np
 
 from .modems.imodem import IModem, ModemConfig, BackpressurePolicy
-from .modems.cpfsk import LiquidBFSKModem
+from .modems.fsk2 import LiquidBFSKModem
 from .modems.fsk4 import LiquidFourFSKModem
 
 # registry

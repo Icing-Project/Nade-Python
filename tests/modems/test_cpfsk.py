@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from nade.modems.cpfsk import LiquidBFSKModem, LiquidFourFSKModem
+from nade.modems import LiquidBFSKModem, LiquidFourFSKModem
 from nade.modems.imodem import ModemConfig
 
 

@@ -7,7 +7,7 @@ pytest.importorskip("liquid")
 
 import numpy as np
 
-from nade.modems.cpfsk import LiquidFourFSKModem, LiquidBFSKModem
+from nade.modems import LiquidFourFSKModem, LiquidBFSKModem
 from nade.modems.imodem import ModemConfig
 
 
