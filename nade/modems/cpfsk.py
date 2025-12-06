@@ -446,7 +446,9 @@ class LiquidFSKModem(IModem):
     # ---------------------------------------------------------------- helpers
     def _handle_symbol(self, sym: int) -> None:
         # Always feed byte-oriented path (BFSK and generic fallback)
-        for byte in self._bit_bucket.push(sym, self.bits_per_symbol):
+        bytes_out = list(self._bit_bucket.push(sym, self.bits_per_symbol))
+        self.log("debug", f"_handle_symbol: sym={sym} bytes_out={bytes_out}")
+        for byte in bytes_out:
             self._rx_bytes.append(byte)
             self._metric_rx_bytes_total += 1
         # Additionally keep symbols for 4FSK symbol-domain parsing
@@ -482,6 +484,7 @@ class LiquidFSKModem(IModem):
             self._rx_frames.popleft()
 
         buf = self._rx_bytes
+        self.log("debug", f"_drain_frames: rx_bytes length={len(buf)}")
         while True:
             if len(self._rx_frames) >= self.cfg.max_rx_frames:
                 return
