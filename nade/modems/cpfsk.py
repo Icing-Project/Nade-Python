@@ -22,12 +22,14 @@ class _LiquidFSKLibrary:
         try:
             module = importlib.import_module("liquid")
         except ImportError as exc:  # pragma: no cover
+            self.log("RuntimeError", f"liquid-dsp is required for the audio modem backend; install the 'liquid-dsp' wheel")
             raise RuntimeError(
                 "liquid-dsp is required for the audio modem backend; install the 'liquid-dsp' wheel"
             ) from exc
 
         lib_path = self._discover_shared_library(Path(module.__file__).resolve())
         if lib_path is None:
+            self.log("RuntimeError", f"Unable to locate the libliquid shared library next to the python extension")
             raise RuntimeError("Unable to locate the libliquid shared library next to the python extension")
 
         self.lib = ctypes.CDLL(str(lib_path))
@@ -74,6 +76,7 @@ class _LiquidFSKLibrary:
     def create_mod(self, bits_per_symbol: int, sps: int, bandwidth: float) -> ctypes.c_void_p:
         handle = self.lib.fskmod_create(bits_per_symbol, sps, ctypes.c_float(bandwidth))
         if not handle:
+            self.log("RuntimeError", f"fskmod_create returned NULL")
             raise RuntimeError("fskmod_create returned NULL")
         return handle
 
@@ -85,11 +88,13 @@ class _LiquidFSKLibrary:
         ptr = buf.ctypes.data_as(ctypes.POINTER(self._c_complex))
         rc = self.lib.fskmod_modulate(handle, symbol, ptr)
         if rc != 0:
+            self.log("RuntimeError", f"fskmod_modulate failed with code {rc}")
             raise RuntimeError(f"fskmod_modulate failed with code {rc}")
 
     def create_dem(self, bits_per_symbol: int, sps: int, bandwidth: float) -> ctypes.c_void_p:
         handle = self.lib.fskdem_create(bits_per_symbol, sps, ctypes.c_float(bandwidth))
         if not handle:
+            self.log("RuntimeError", f"fskdem_create returned NULL")
             raise RuntimeError("fskdem_create returned NULL")
         return handle
 
@@ -104,6 +109,7 @@ class _LiquidFSKLibrary:
     def create_hilbert(self, semi_length: int, attenuation_db: float) -> ctypes.c_void_p:
         handle = self.lib.firhilbf_create(semi_length, ctypes.c_float(attenuation_db))
         if not handle:
+            self.log("RuntimeError", f"firhilbf_create returned NULL")
             raise RuntimeError("firhilbf_create returned NULL")
         return handle
 
@@ -353,7 +359,11 @@ class LiquidFSKModem(IModem):
         amp = float(self._amp)
 
         for idx in range(self.SYMS_PER_BLK):
-            sym = self._tx_syms.popleft() if self._tx_syms else self._idle_symbol
+            if self._tx_syms:
+                sym = self._tx_syms.popleft()
+            else:
+                self.log("debug", f"pull_tx_block: _tx_syms is NULL")
+                sym = self._idle_symbol
             self._backend.modulate(self._mod_handle, sym, self._mod_tmp)
 
             phase_rot = np.complex64(math.cos(self._tx_phase) + 1j * math.sin(self._tx_phase))

@@ -101,11 +101,13 @@ class NoiseXKWrapper:
     # ---------------- AEAD ----------------
     def encrypt_sdu(self, ad: bytes, plaintext: bytes) -> bytes:
         if not (self.handshake_complete and self._send_cs):
+            self.log("RuntimeError", f"Noise not ready")
             raise RuntimeError("Noise not ready")
         return self._send_cs.encrypt_with_ad(ad, plaintext)
 
     def decrypt_sdu(self, ad: bytes, ciphertext: bytes) -> bytes:
         if not (self.handshake_complete and self._recv_cs):
+            self.log("RuntimeError", f"Noise not ready")
             raise RuntimeError("Noise not ready")
         return self._recv_cs.decrypt_with_ad(ad, ciphertext)
 
