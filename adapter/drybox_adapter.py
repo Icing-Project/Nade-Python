@@ -12,6 +12,10 @@ from typing import Any, Deque, List, Optional, Tuple
 import os
 import json
 from nade.audio import AudioStack
+from nade.crypto.noise_wrapper import NoiseXKWrapper
+from dissononce.dh.keypair import KeyPair
+from dissononce.dh.x25519.public import PublicKey
+from dissononce.dh.x25519.private import PrivateKey
 
 try:
     import numpy as np
@@ -40,12 +44,6 @@ def _merged_nade_cfg(base: dict | None) -> dict:                                
     return cfg
 
 
-def _auto_text(nade_cfg: dict | None) -> str:
-    """Return demo text, unchanged behavior (prefer nade_cfg['auto_text'] if str)."""
-    auto = (nade_cfg or {}).get("auto_text")
-    return auto if isinstance(auto, str) else "Hello from Nade-Python Audio mode!"
-
-
 class Adapter:
     """
     DryBox adapter (v1) for Nade.
@@ -61,7 +59,7 @@ class Adapter:
         self.cfg: dict = {}
         self.ctx: Optional[Any] = None
         self.mode: str = "byte"
-        self.side: str = "L"  # "L"/"R" fourni par runner
+        self.side: str = "L"
         self.crypto: dict = {}
         # ByteLink state (mock)
         self._byte_started: bool = False
@@ -70,6 +68,13 @@ class Adapter:
         self._byte_txq: Deque[Tuple[bytes, int]] = deque()
         # Audio state
         self._audio_stack: Optional[AudioStack] = None
+        self._noise: Optional[NoiseXKWrapper] = None
+        self._handshake_started = False
+        self._pending_handshake = True
+
+        # TX queue for encrypted SDUs (Noise inside Audio)
+        self._audio_tx_sdu_q: Deque[bytes] = deque()
+
 
     # ---- capabilities (runner les lit avant de démarrer l’I/O) ----
     def nade_capabilities(self) -> dict:
@@ -90,21 +95,45 @@ class Adapter:
         # Base config plus optional env override: NADE_ADAPTER_CFG='{"modem":"bfsk","modem_cfg":{...}}'
         self.nade_cfg = _merged_nade_cfg(self.cfg.get("nade", {}) or {})
 
-    def start(self, ctx: Any) -> None:
+    def start(self, ctx):
         self.ctx = ctx
+
         if self.mode == "audio":
+
+            self._audio_logger("info", f"[Adapter] start() side={self.side} mode=audio")
+
             modem_cfg = (self.nade_cfg or {}).get("modem_cfg") or {}
             modem_name = (self.nade_cfg or {}).get("modem", "bfsk")
-            self._audio_stack = AudioStack(modem=modem_name, modem_cfg=modem_cfg, logger=self._audio_logger)
-            # auto-send demo text
-            msg = _auto_text(self.nade_cfg)
-            self._audio_stack.queue_text(msg)
-            self.ctx.emit_event("text_tx", {"text": msg})
+
+            self._audio_logger("info", f"[Adapter] Creating AudioStack modem={modem_name} cfg={modem_cfg}")
+
+            self._audio_stack = AudioStack(
+                modem=modem_name,
+                modem_cfg=modem_cfg,
+                logger=self._audio_logger,
+            )
+
+            # ------- Noise config logging --------
+            priv_raw = self.crypto.get("priv")
+            pub_raw = self.crypto.get("pub")
+            peer_pub_raw = self.crypto.get("peer_pub")
+
+            self._audio_logger("info", f"[Noise] Local pub={pub_raw.hex()} peer_pub={peer_pub_raw.hex() if peer_pub_raw else None}")
+
+            # ------- Keypair setup ----------
+            local_kp = KeyPair(PublicKey(bytes(pub_raw)), PrivateKey(bytes(priv_raw)))
+            peer_pub_obj = PublicKey(bytes(peer_pub_raw)) if peer_pub_raw else None
+
+            self._noise = NoiseXKWrapper(
+                keypair=local_kp,
+                peer_pubkey=peer_pub_obj,
+                debug_callback=lambda msg: self._audio_logger("debug", "[Noise dbg] " + msg),
+            )
+
         else:
-            # reset byte-link state
+            self._audio_logger("info", "[Adapter] start() mode=byte")
             self._byte_started = False
             self._byte_done = False
-            self._byte_t_ms = 0
             self._byte_txq.clear()
 
     def stop(self) -> None:
@@ -119,11 +148,11 @@ class Adapter:
                 self._byte_started = True
                 if self.side == "L":  # initiator sends HS1
                     self._byte_txq.append((bytes([HANDSHAKE_TAG]) + b"HS1", self._byte_t_ms))
-        else:
-            if self._audio_stack is not None:
-                pass
+        return
 
-    # ---- ByteLink I/O ----
+    # ----------------------------------------------------------------------
+    # BYTELINK
+    # ----------------------------------------------------------------------
     def poll_link_tx(self, budget: int):
         if self.mode == "audio":
             return []
@@ -149,27 +178,138 @@ class Adapter:
             # Keep behavior no-op for external surfaces
             pass
 
-    # ---- AudioBlock I/O ----
-    def pull_tx_block(self, t_ms: int):
-        if self._audio_stack is not None:
-            blk = self._audio_stack.pull_tx_block(t_ms)
-            # Optional capture hook kept disabled (behavior unchanged)
-            return blk
-        # silent fallback if audio not active
-        if np is None:
-            return None
-        return np.zeros(160, dtype=np.int16)
+    # ----------------------------------------------------------------------
+    # AUDIOBLOCK TX (device → modem → PCM)
+    # ----------------------------------------------------------------------
+    def pull_tx_block(self, t_ms):
 
-    def push_rx_block(self, pcm, t_ms: int):
-        if self._audio_stack is None:
+        if not self._audio_stack:
+            return np.zeros(160, dtype=np.int16) if np else None
+
+        # ---- Handshake TX ----
+        if self._noise and not self._noise.handshake_complete:
+            hs_msg = self._noise.get_next_handshake_message()
+            if hs_msg:
+                self._audio_logger("info",
+                    f"[NoiseXK] TX handshake msg len={len(hs_msg)} hex={hs_msg.hex()[:32]}...")
+                self._audio_stack.tx_enqueue(hs_msg)
+            else:
+                self._audio_logger("debug", "[NoiseXK] No handshake message ready yet")
+
+        # ---- Encrypted SDU TX ----
+        if self._audio_tx_sdu_q:
+            sdu = self._audio_tx_sdu_q.popleft()
+            self._audio_logger("info",
+                f"[Nade] TX encrypted SDU len={len(sdu)} hex={sdu.hex()[:32]}...")
+            self._audio_stack.tx_enqueue(sdu)
+
+        pcm_out = self._audio_stack.pull_tx_block(t_ms)
+
+        # === Normalize PCM ===
+        if pcm_out is not None and pcm_out.size > 0:
+            max_abs = np.max(np.abs(pcm_out))
+            if max_abs > 0:
+                pcm_out = (pcm_out.astype(np.float32) / max_abs) * 32767
+                pcm_out = pcm_out.astype(np.int16)
+
+        return pcm_out
+    
+    # ----------------------------------------------------------------------
+    # AUDIOBLOCK RX (PCM → modem → encrypted SDUs → decrypted SDUs)
+    # ----------------------------------------------------------------------
+    def push_rx_block(self, pcm, t_ms):
+
+        if not self._audio_stack:
+            self._audio_logger("debug",f"not self._audio_stack")
             return
-        self._audio_stack.push_rx_block(pcm, t_ms)
-        texts = self._audio_stack.pop_received_texts()
-        for txt in texts:
-            self.ctx.emit_event("log", {"level": "info", "msg": f"[Nade] RX TEXT: {txt}"})
-            self.ctx.emit_event("text_rx", {"text": txt})
+        
+        pcm_float = pcm.astype(np.float32) / 32767.0
 
-    # ---- logger for AudioStack ----
+        self._audio_stack.push_rx_block(pcm_float, t_ms)
+
+        payloads = self._audio_stack.pop_rx_frames()
+
+        if not payloads:
+            self._audio_logger("debug",f"not payloads")
+            return
+
+        for frame in payloads:
+            self._audio_logger("debug",f"frame in payloads")
+
+            self._audio_logger(
+                "info",
+                f"[Adapter] RX frame len={len(frame)} hex={frame.hex()[:32]}..."
+            )
+
+            if not self._noise:
+                self._audio_logger("error", "[Adapter] RX frame but _noise is None!")
+                continue
+
+            # -------- handshake path --------
+            if self._pending_handshake:
+                    self._pending_handshake = False
+                    self._noise.start_handshake(initiator=(self.side == "L"))
+                    self._audio_logger("info", f"[Noise] Starting NoiseXK handshake (initiator={self.side == 'L'})")
+            elif not self._noise.handshake_complete:
+                self._audio_logger("info", "[NoiseXK] RX handshake message")
+
+                try:
+                    self._noise.process_handshake_message(frame)
+                except Exception as e:
+                    self._audio_logger("error",
+                        f"[NoiseXK] ERROR while processing handshake message: {e}")
+                    continue
+
+                self._audio_logger("info",
+                    f"[NoiseXK] Handshake state: complete={self._noise.handshake_complete}")
+
+                if self._noise.handshake_complete:
+                    self._audio_logger("info", "[NoiseXK] Handshake COMPLETED")
+                    self.ctx.emit_event("handshake_complete", {"side": self.side})
+
+                continue
+
+            # -------- encrypted SDU path --------
+            try:
+                plaintext = self._noise.decrypt_sdu(b"", frame)
+                self._audio_logger(
+                    "info",
+                    f"[Nade] RX decrypted SDU len={len(plaintext)} text={plaintext!r}"
+                )
+                self.ctx.emit_event("text_rx",
+                    {"text": plaintext.decode("utf-8", errors="ignore")})
+            except Exception as e:
+                self._audio_logger("error",
+                    f"[NoiseXK] decrypt_sdu FAILED: {e} (len={len(frame)})")
+    
+    # ----------------------------------------------------------------------
+    # API: external system injects SDUs into Audio mode
+    # ----------------------------------------------------------------------
+    def send_sdu(self, data: bytes):
+
+        if not self._noise or not self._noise.handshake_complete:
+            self._audio_logger("warn",
+                f"[Nade] Tried to send SDU but handshake is incomplete. Dropped.")
+            return
+
+        try:
+            ct = self._noise.encrypt_sdu(b"", data)
+        except Exception as e:
+            self._audio_logger("error",
+                f"[NoiseXK] encrypt_sdu FAILED: {e} plaintext={data!r}")
+            return
+
+        self._audio_logger(
+            "info",
+            f"[Nade] Queue TX SDU plaintext_len={len(data)} ct_len={len(ct)}"
+        )
+
+        self._audio_tx_sdu_q.append(ct)
+
+    
+    # ----------------------------------------------------------------------
+    # Logger
+    # ----------------------------------------------------------------------
     def _audio_logger(self, level: str, payload: Any) -> None:
         if level == "metric" and isinstance(payload, dict):
             self.ctx.emit_event("metric", payload)

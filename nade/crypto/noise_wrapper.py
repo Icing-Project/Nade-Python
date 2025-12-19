@@ -14,7 +14,9 @@ from dissononce.processing.impl.cipherstate import CipherState as _CipherStateTy
 
 
 def _hex(b: Optional[bytes]) -> str:
-    return b.hex() if b else "<none>"
+    if b is None:
+        return "<none>"
+    return b.hex()
 
 
 class NoiseXKWrapper:
@@ -63,6 +65,15 @@ class NoiseXKWrapper:
             if self.peer_pubkey is None:
                 raise ValueError("Initiator requires peer static public key")
             self._hs.initialize(XKHandshakePattern(), True, b'', s=self.keypair, rs=self.peer_pubkey)
+
+            out = bytearray()
+            cs_pair = self._hs.write_message(b'', out)
+            if out:
+                self.outgoing_messages.append(bytes(out))
+                self.debug(f"[NoiseXK] queued initial M1 ({len(out)} bytes): {bytes(out).hex()}")
+            if cs_pair:
+                self._complete_handshake(cs_pair)
+
         else:
             self._hs.initialize(XKHandshakePattern(), False, b'', s=self.keypair)
             self.debug("[NoiseXK] responder initialized (waiting for M1)")
@@ -115,6 +126,7 @@ class NoiseXKWrapper:
             self._send_cs, self._recv_cs = cs0, cs1
         else:
             self._send_cs, self._recv_cs = cs1, cs0
+        print(f"[NoiseXK] handshake complete; secure channel ready")
         self.handshake_complete = True
         self.debug("[NoiseXK] handshake complete; secure channel ready")
 
