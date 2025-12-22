@@ -354,7 +354,7 @@ class LiquidFSKModem(IModem):
             out.append(self._rx_frames.popleft())
         return out
 
-    def pull_tx_block(self, t_ms: int) -> Int16Block:
+    def push_tx_block(self, t_ms: int) -> Int16Block:
         out = np.empty(self.BLK, dtype=np.int16)
         amp = float(self._amp)
 
@@ -362,7 +362,7 @@ class LiquidFSKModem(IModem):
             if self._tx_syms:
                 sym = self._tx_syms.popleft()
             else:
-                self.log("debug", f"pull_tx_block: _tx_syms is NULL")
+                self.log("debug", f"push_tx_block: _tx_syms is NULL")
                 sym = self._idle_symbol
             self._backend.modulate(self._mod_handle, sym, self._mod_tmp)
 
@@ -378,7 +378,7 @@ class LiquidFSKModem(IModem):
 
         return out
 
-    def push_rx_block(self, pcm: Int16Block, t_ms: int) -> None:
+    def pull_rx_block(self, pcm: Int16Block, t_ms: int) -> None:
         norm = pcm.astype(np.float32) / float(self._amp)
         self._backend.hilbert_r2c(self._hilbert_handle, norm, self._analytic_tmp)
         phase_rot = np.complex64(math.cos(self._rx_phase) - 1j * math.sin(self._rx_phase))
@@ -457,7 +457,8 @@ class LiquidFSKModem(IModem):
     def _handle_symbol(self, sym: int) -> None:
         # Always feed byte-oriented path (BFSK and generic fallback)
         bytes_out = list(self._bit_bucket.push(sym, self.bits_per_symbol))
-        self.log("debug", f"_handle_symbol: sym={sym} bytes_out={bytes_out}")
+        if bytes_out:
+            self.log("debug", f"_handle_symbol: sym={sym} bytes_out={bytes_out}")
         for byte in bytes_out:
             self._rx_bytes.append(byte)
             self._metric_rx_bytes_total += 1
