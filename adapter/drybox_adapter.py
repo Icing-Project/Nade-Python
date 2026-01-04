@@ -197,8 +197,6 @@ class Adapter:
                 self._audio_logger("info",
                     f"[NoiseXK] TX handshake msg len={len(hs_msg)} hex={hs_msg.hex()[:32]}...")
                 self._audio_stack.tx_enqueue(hs_msg)
-            else:
-                self._audio_logger("debug", "[NoiseXK] No handshake message ready yet")
             
         # ---- Encrypted SDU TX ----
         if self._audio_tx_sdu_q:
@@ -235,17 +233,11 @@ class Adapter:
         
         self._audio_stack.pull_rx_block(pcm, t_ms)
         payloads = self._audio_stack.pop_rx_frames()
-        
-        if not payloads:
-            self._audio_logger("debug",f"not payloads")
-            return
 
         for frame in payloads:
-            self._audio_logger("debug",f"frame in payloads")
-
             self._audio_logger(
                 "info",
-                f"[Adapter] RX frame len={len(frame)} hex={frame.hex()[:32]}..."
+                f"[Adapter] RX frame len={len(frame)} hex={frame.hex()}"
             )
 
             if not self._noise:

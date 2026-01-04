@@ -362,7 +362,6 @@ class LiquidFSKModem(IModem):
             if self._tx_syms:
                 sym = self._tx_syms.popleft()
             else:
-                self.log("debug", f"push_tx_block: _tx_syms is NULL")
                 sym = self._idle_symbol
             self._backend.modulate(self._mod_handle, sym, self._mod_tmp)
 
