@@ -357,6 +357,9 @@ class LiquidFSKModem(IModem):
     def push_tx_block(self, t_ms: int) -> Int16Block:
         out = np.empty(self.BLK, dtype=np.int16)
         amp = float(self._amp)
+        
+        # Track if we had symbols to transmit at the start of this block
+        had_tx_symbols = bool(self._tx_syms)
 
         for idx in range(self.SYMS_PER_BLK):
             if self._tx_syms:
@@ -374,6 +377,13 @@ class LiquidFSKModem(IModem):
             out[start:start + self.SPS] = scaled
 
             self._tx_phase = (self._tx_phase + self._carrier_symbol_phase) % (2.0 * math.pi)
+        
+        # CRITICAL FIX: Clear bit bucket when transitioning from TX to idle
+        # This ensures RX starts with a clean slate, no residual bits from TX
+        if had_tx_symbols and not self._tx_syms:
+            if self._bit_bucket.count != 0:
+                self.log("info", f"TX→idle: clearing {self._bit_bucket.count} residual RX bits")
+                self._bit_bucket.clear()
 
         return out
 
@@ -417,19 +427,19 @@ class LiquidFSKModem(IModem):
                 cfo_hz = rad_per_sample * (self.SR / (2.0 * math.pi))
             except Exception:
                 cfo_hz = 0.0
-            self.log("metric", {
-                "event": "demod",
-                "bits_per_symbol": self.bits_per_symbol,
-                "sps": self.SPS,
-                "rx_syms": int(self._metric_rx_symbols),
-                "rx_bytes": int(self._metric_rx_bytes_total),
-                "preamble_hits": int(self._metric_preamble_hits),
-                "frames": int(self._metric_frames_decoded),
-                "rx_queue_frames": int(len(self._rx_frames)),
-                "cfo_hz_est": float(cfo_hz),
-                "sym_head": block_syms[:16],
-                "sym_count": len(block_syms),
-            })
+            # self.log("metric", {
+            #     "event": "demod",
+            #     "bits_per_symbol": self.bits_per_symbol,
+            #     "sps": self.SPS,
+            #     "rx_syms": int(self._metric_rx_symbols),
+            #     "rx_bytes": int(self._metric_rx_bytes_total),
+            #     "preamble_hits": int(self._metric_preamble_hits),
+            #     "frames": int(self._metric_frames_decoded),
+            #     "rx_queue_frames": int(len(self._rx_frames)),
+            #     "cfo_hz_est": float(cfo_hz),
+            #     "sym_head": block_syms[:16],
+            #     "sym_count": len(block_syms),
+            # })
         except Exception:
             pass
 
@@ -454,7 +464,6 @@ class LiquidFSKModem(IModem):
 
     # ---------------------------------------------------------------- helpers
     def _handle_symbol(self, sym: int) -> None:
-        # Always feed byte-oriented path (BFSK and generic fallback)
         bytes_out = list(self._bit_bucket.push(sym, self.bits_per_symbol))
         if bytes_out:
             self.log("debug", f"_handle_symbol: sym={sym} bytes_out={bytes_out}")
@@ -490,68 +499,134 @@ class LiquidFSKModem(IModem):
         return preamble + sync + bytes([ln]) + payload + bytes([checksum])
 
     def _drain_frames(self) -> None:
+        """
+        Drain complete frames from rx_bytes buffer.
+        """
         while len(self._rx_frames) > self.cfg.max_rx_frames:
             self._rx_frames.popleft()
 
         buf = self._rx_bytes
         self.log("debug", f"_drain_frames: rx_bytes length={len(buf)}")
+        
         while True:
             if len(self._rx_frames) >= self.cfg.max_rx_frames:
                 return
-            if len(buf) < 18:
+                
+            if len(buf) < 19:
                 return
 
+            # Count consecutive 0x55 bytes at the start
             preamble_len = 0
             while preamble_len < len(buf) and buf[preamble_len] == 0x55:
                 preamble_len += 1
+            
+            # Case 1: First byte is not 0x55
+            if preamble_len == 0:
+                # Look ahead - is there a 0x55 nearby?
+                skip_count = 0
+                for i in range(min(len(buf), 20)):
+                    if buf[i] == 0x55:
+                        skip_count = i
+                        break
+                
+                if skip_count > 0:
+                    # Drop all garbage before the first 0x55
+                    self.log("debug", f"Skipping {skip_count} non-preamble bytes to reach 0x55")
+                    for _ in range(skip_count):
+                        buf.popleft()
+                    
+                    # CRITICAL FIX: Clear bit bucket after skipping garbage
+                    # The preamble 0x55 = 01010101 marks a byte boundary
+                    if self._bit_bucket.count != 0:
+                        self.log("info", f"Cleared {self._bit_bucket.count} residual bits after finding preamble")
+                        self._bit_bucket.clear()
+                    continue
+                else:
+                    # No 0x55 found in lookahead, drop one byte
+                    dropped = buf.popleft()
+                    self.log("debug", f"Dropped non-preamble byte: 0x{dropped:02x}")
+                    continue
+            
+            # Case 2: We have some 0x55 bytes but fewer than 8 - wait for more
             if preamble_len < 8:
-                buf.popleft()
-                continue
-
-            # Ensure sync bytes are present after preamble
-            if preamble_len + 2 > len(buf) - 1:
+                self.log("debug", f"Partial preamble ({preamble_len} bytes), waiting for more")
                 return
-            if buf[preamble_len] != 0xD3 or buf[preamble_len + 1] != 0x91:
-                buf.popleft()
+            
+            # Case 3: We have 8+ preamble bytes - check for sync word
+            if preamble_len + 2 > len(buf):
+                self.log("debug", f"Have preamble ({preamble_len} bytes), waiting for sync")
+                return
+            
+            sync1 = buf[preamble_len]
+            sync2 = buf[preamble_len + 1]
+            
+            # Case 4: Bad sync word - drop one preamble byte and retry
+            if sync1 != 0xD3 or sync2 != 0x91:
+                dropped = buf.popleft()
+                self.log("debug", f"Bad sync after preamble: expected [D3 91], got [{sync1:02x} {sync2:02x}], dropped 0x{dropped:02x}")
                 continue
-
-            # Peek the length without consuming; only pop once the full frame is present
+            
+            # Case 5: Valid preamble + sync - check if we have complete frame
             if preamble_len + 3 > len(buf):
+                self.log("debug", f"Have preamble+sync, waiting for length byte")
                 return
+            
             ln = buf[preamble_len + 2]
             total_needed = preamble_len + 2 + 1 + ln + 1
+            
             if len(buf) < total_needed:
+                self.log("debug", f"Waiting for complete frame (have {len(buf)}, need {total_needed})")
                 return
 
-            # We have a plausible preamble + sync and full frame buffered
+            # Case 6: We have a complete frame - process it
             self._metric_preamble_hits += 1
-
+            
             # Consume preamble
             for _ in range(preamble_len):
                 buf.popleft()
 
-            # Consume header
-            if buf.popleft() != 0xD3:
-                continue
-            if buf.popleft() != 0x91:
+            # Consume and verify sync
+            s1 = buf.popleft()
+            s2 = buf.popleft()
+            if s1 != 0xD3 or s2 != 0x91:
+                self.log("debug", f"Sync verification failed during consume")
                 continue
 
+            # Consume length
             ln2 = buf.popleft()
             if ln2 != ln:
-                # Length changed while peeking; resync
+                self.log("debug", f"Length mismatch: {ln2} != {ln}")
                 continue
 
+            # Consume payload
             payload = bytes(buf.popleft() for _ in range(ln))
+            
+            # Consume checksum
             checksum = buf.popleft()
-            if ((sum(payload) + ln) & 0xFF) == checksum:
+            
+            # Verify checksum
+            expected_checksum = (sum(payload) + ln) & 0xFF
+            
+            if expected_checksum == checksum:
+                self.log("info", f"✓ Valid frame: len={ln}, checksum=0x{checksum:02x}")
+                
                 if len(self._rx_frames) >= self.cfg.max_rx_frames:
                     self._rx_frames.popleft()
+                
                 self._rx_frames.append(payload)
                 self._metric_frames_decoded += 1
+                
                 try:
-                    self.log("metric", {"event": "frame_rx", "len": len(payload), "hex_head": payload[:16].hex(), "path": "byte"})
+                    self.log("metric", {
+                        "event": "frame_rx", 
+                        "len": len(payload), 
+                        "hex_head": payload[:16].hex(), 
+                        "path": "byte"
+                    })
                 except Exception:
                     pass
+            else:
+                self.log("debug", f"Checksum failed: expected=0x{expected_checksum:02x}, got=0x{checksum:02x}")
 
     def _pending_frames(self) -> List[int]:
         return [1] if self._tx_syms else []

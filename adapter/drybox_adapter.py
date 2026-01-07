@@ -25,6 +25,7 @@ except Exception:
 ABI_VERSION = "dbx-v1"
 HANDSHAKE_TAG = 0x20
 SDU_MAX_BYTES = 1024
+INITIATOR_SIDE = "L"
 
 
 def _merged_nade_cfg(base: dict | None) -> dict:                                    # TODO: remove when switching to DryBox controls OR effective statemachine
@@ -146,7 +147,7 @@ class Adapter:
             self._byte_t_ms = t_ms
             if not self._byte_started:
                 self._byte_started = True
-                if self.side == "L":  # initiator sends HS1
+                if self.side == INITIATOR_SIDE:  # initiator sends HS1
                     self._byte_txq.append((bytes([HANDSHAKE_TAG]) + b"HS1", self._byte_t_ms))
         return
 
@@ -188,10 +189,10 @@ class Adapter:
         # ---- Handshake TX ----
         if self._pending_handshake:
             self._pending_handshake = False
-            self._noise.start_handshake(initiator=(self.side == "L"))
-            self._audio_logger("info", f"[Noise] Starting NoiseXK handshake (initiator={self.side == 'L'})")
+            self._noise.start_handshake(initiator=(self.side == INITIATOR_SIDE))
+            self._audio_logger("info", f"[Noise] Starting NoiseXK handshake (initiator={self.side == INITIATOR_SIDE})")
         
-        if self._noise and not self._noise.handshake_complete:
+        if self._noise:
             hs_msg = self._noise.get_next_handshake_message()
             if hs_msg:
                 self._audio_logger("info",
@@ -228,8 +229,8 @@ class Adapter:
         # ---- Handshake TX ----
         if self._pending_handshake:
             self._pending_handshake = False
-            self._noise.start_handshake(initiator=(self.side == "L"))
-            self._audio_logger("info", f"[Noise] Starting NoiseXK handshake (initiator={self.side == 'L'})")
+            self._noise.start_handshake(initiator=(self.side == INITIATOR_SIDE))
+            self._audio_logger("info", f"[Noise] Starting NoiseXK handshake (initiator={self.side == INITIATOR_SIDE})")
         
         self._audio_stack.pull_rx_block(pcm, t_ms)
         payloads = self._audio_stack.pop_rx_frames()
