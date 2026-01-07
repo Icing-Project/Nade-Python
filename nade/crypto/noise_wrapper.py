@@ -1,3 +1,4 @@
+import traceback
 from typing import Optional, List, Callable, Tuple
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.symmetricstate import SymmetricState
@@ -14,7 +15,9 @@ from dissononce.processing.impl.cipherstate import CipherState as _CipherStateTy
 
 
 def _hex(b: Optional[bytes]) -> str:
-    return b.hex() if b else "<none>"
+    if b is None:
+        return "<none>"
+    return b.hex()
 
 
 class NoiseXKWrapper:
@@ -63,36 +66,96 @@ class NoiseXKWrapper:
             if self.peer_pubkey is None:
                 raise ValueError("Initiator requires peer static public key")
             self._hs.initialize(XKHandshakePattern(), True, b'', s=self.keypair, rs=self.peer_pubkey)
+
+            out = bytearray()
+            cs_pair = self._hs.write_message(b'', out)
+            if out:
+                self.outgoing_messages.append(bytes(out))
+                self.debug(f"[NoiseXK] queued initial M1 ({len(out)} bytes): {bytes(out).hex()}")
+            if cs_pair:
+                self._complete_handshake(cs_pair)
+
         else:
             self._hs.initialize(XKHandshakePattern(), False, b'', s=self.keypair)
             self.debug("[NoiseXK] responder initialized (waiting for M1)")
 
     def process_handshake_message(self, data: bytes):
+        """
+        Processes an incoming handshake message with robust error handling
+        and state inspection.
+        """
+        # 1. Check Pre-conditions
         if self.handshake_complete:
-            self.debug(f"[NoiseXK] ignoring handshake msg (already complete)")
+            self.debug(f"[NoiseXK] Ignoring handshake msg (already complete)")
             return
 
+        if not data:
+            self.debug("warning", "[NoiseXK] Received empty handshake data frame.")
+            return
+
+        # 2. Lazy Initialization
         if self._hs is None:
-            # Responder initializes lazily
-            self._hs = self._new_handshakestate()
-            self._hs.initialize(XKHandshakePattern(), False, b'', s=self.keypair)
-            self.debug("[NoiseXK] lazily initialized handshake state for responder")
+            try:
+                # Responder initializes lazily
+                self._hs = self._new_handshakestate()
+                self._hs.initialize(XKHandshakePattern(), False, b'', s=self.keypair)
+                self.debug("[NoiseXK] Lazily initialized handshake state for responder")
+            except Exception as e:
+                # If init fails, we cannot proceed.
+                self._log_crash("Handshake State Initialization", e)
+                raise RuntimeError(f"Noise Initialization Failed: {repr(e)}") from e
 
-        self.debug(f"[NoiseXK] processing HS msg ({len(data)} bytes): {data.hex()}")
-        payload = bytearray()
-        cs_pair_read = self._hs.read_message(data, payload)
-        if cs_pair_read:
-            self._complete_handshake(cs_pair_read)
-            return
+        # 3. Process Message with granular error handling
+        try:
+            self.debug(f"[NoiseXK] Processing HS msg ({len(data)} bytes): {data.hex()}")
+            
+            payload = bytearray()
+            
+            # CRITICAL: This is usually where decryption/parsing fails
+            cs_pair_read = self._hs.read_message(data, payload)
+            
+            self.debug(f"[NoiseXK] Processing HS msg ({len(data)} bytes): {data.hex()}")
+            
+            if cs_pair_read:
+                self._complete_handshake(cs_pair_read)
+                return
+            
+            # If a response is required, queue it
+            out = bytearray()
+            cs_pair_write = self._hs.write_message(b'', out)
+            
+            if out:
+                self.outgoing_messages.append(bytes(out))
+                self.debug(f"[NoiseXK] Queued HS response ({len(out)} bytes): {bytes(out).hex()}")
+            
+            if cs_pair_write:
+                self._complete_handshake(cs_pair_write)
 
-        # If a response is required, queue it
-        out = bytearray()
-        cs_pair_write = self._hs.write_message(b'', out)
-        if out:
-            self.outgoing_messages.append(bytes(out))
-            self.debug(f"[NoiseXK] queued HS response ({len(out)} bytes): {bytes(out).hex()}")
-        if cs_pair_write:
-            self._complete_handshake(cs_pair_write)
+        except Exception as e:
+            # 4. Contextual Logging
+            # Log the full details here so you see them even if the caller just prints {e}
+            self._log_crash("Handshake Processing", e, data)
+            
+            # Re-raise with a descriptive message so the caller's log isn't empty
+            raise RuntimeError(f"Noise Protocol Error: {type(e).__name__} - {args_to_str(e)}") from e
+
+    def _log_crash(self, context: str, e: Exception, data: bytes = None):
+        """Helper to log detailed crash info including tracebacks."""
+        tb_str = traceback.format_exc()
+        error_details = (
+            f"\n[NoiseXK] === CRITICAL ERROR: {context} ===\n"
+            f"Error Type: {type(e).__name__}\n"
+            f"Error Repr: {repr(e)}\n"
+            f"Error Args: {e.args}\n"
+        )
+        if data:
+            error_details += f"Bad Data Hex: {data.hex()}\n"
+        
+        error_details += f"Stack Trace:\n{tb_str}"
+        error_details += "========================================="
+        
+        # Use your existing logger
+        self.debug("error", error_details)
 
 
     def get_next_handshake_message(self) -> Optional[bytes]:
@@ -101,11 +164,13 @@ class NoiseXKWrapper:
     # ---------------- AEAD ----------------
     def encrypt_sdu(self, ad: bytes, plaintext: bytes) -> bytes:
         if not (self.handshake_complete and self._send_cs):
+            self.log("RuntimeError", f"Noise not ready")
             raise RuntimeError("Noise not ready")
         return self._send_cs.encrypt_with_ad(ad, plaintext)
 
     def decrypt_sdu(self, ad: bytes, ciphertext: bytes) -> bytes:
         if not (self.handshake_complete and self._recv_cs):
+            self.log("RuntimeError", f"Noise not ready")
             raise RuntimeError("Noise not ready")
         return self._recv_cs.decrypt_with_ad(ad, ciphertext)
 
@@ -115,6 +180,7 @@ class NoiseXKWrapper:
             self._send_cs, self._recv_cs = cs0, cs1
         else:
             self._send_cs, self._recv_cs = cs1, cs0
+        print(f"[NoiseXK] handshake complete; secure channel ready")
         self.handshake_complete = True
         self.debug("[NoiseXK] handshake complete; secure channel ready")
 
@@ -125,3 +191,8 @@ class NoiseXKWrapper:
         self._recv_cs = None
         self.handshake_complete = False
         self.start_handshake(bool(self.is_initiator))
+
+def args_to_str(e):
+    if hasattr(e, 'args') and e.args:
+        return str(e.args)
+    return str(e)

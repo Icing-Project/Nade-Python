@@ -27,7 +27,7 @@ class IModem(Protocol):
     """
     Minimal, side-effect-free modem interface for DryBox.
     Time values MUST be monotonic (same clock as DryBox), in milliseconds since an arbitrary start.
-    Audio cadence is driven by DryBox via pull_tx_block()/push_rx_block().
+    Audio cadence is driven by DryBox via push_tx_block()/pull_rx_block().
     All methods MUST be non-blocking.
     """
 
@@ -44,6 +44,6 @@ class IModem(Protocol):
 
     # ---- AudioBlock API (DBX-ABI v1) ----
     # Must return a C-contiguous int16 array of length == cfg.block_size.
-    def pull_tx_block(self, t_ms: int) -> Int16Block: ...
+    def push_tx_block(self, t_ms: int) -> Int16Block: ...
     # Accepts a C-contiguous int16 array of length == cfg.block_size.
-    def push_rx_block(self, pcm: Int16Block, t_ms: int) -> None: ...
+    def pull_rx_block(self, pcm: Int16Block, t_ms: int) -> None: ...

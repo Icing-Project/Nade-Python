@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, Type, Callable, List
 import numpy as np
 
 from .modems.imodem import IModem, ModemConfig, BackpressurePolicy
-from .modems.cpfsk import LiquidBFSKModem
+from .modems.fsk2 import LiquidBFSKModem
 from .modems.fsk4 import LiquidFourFSKModem
 
 # registry
@@ -47,11 +47,11 @@ class AudioStack:
         self.set_modem(modem, modem_cfg or {})
 
     # ---- DBX-ABI v1 ---------------------------------------------------------
-    def pull_tx_block(self, t_ms: int) -> np.ndarray:
-        return self.modem.pull_tx_block(t_ms)
+    def push_tx_block(self, t_ms: int) -> np.ndarray:
+        return self.modem.push_tx_block(t_ms)
 
-    def push_rx_block(self, pcm: np.ndarray, t_ms: int) -> None:
-        self.modem.push_rx_block(pcm, t_ms)
+    def pull_rx_block(self, pcm: np.ndarray, t_ms: int) -> None:
+        self.modem.pull_rx_block(pcm, t_ms)
 
 
     # ---- byte API -----------------------------------------------------------

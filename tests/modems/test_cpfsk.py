@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from nade.modems.cpfsk import LiquidBFSKModem, LiquidFourFSKModem
+from nade.modems import LiquidBFSKModem, LiquidFourFSKModem
 from nade.modems.imodem import ModemConfig
 
 
@@ -11,8 +11,8 @@ def _loopback_once(modem, payload: bytes) -> list[bytes]:
     received: list[bytes] = []
 
     for tick in range(120):
-        block = modem.pull_tx_block(tick * 20)
-        modem.push_rx_block(block, tick * 20)
+        block = modem.push_tx_block(tick * 20)
+        modem.pull_rx_block(block, tick * 20)
         received.extend(modem.rx_dequeue())
         if received:
             break

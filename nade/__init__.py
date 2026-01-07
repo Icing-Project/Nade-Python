@@ -1,7 +1,6 @@
 from .audio import AudioStack
 from .crypto.noise_wrapper import NoiseXKWrapper
-from .modems.cpfsk import LiquidBFSKModem
-from .modems.fsk4 import LiquidFourFSKModem
+from .modems import LiquidFourFSKModem, LiquidBFSKModem
 
 # Backwards-compatible alias for the previous FourFSK modem name
 FourFSKModem = LiquidFourFSKModem

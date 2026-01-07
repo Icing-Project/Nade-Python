@@ -7,7 +7,7 @@ pytest.importorskip("liquid")
 
 import numpy as np
 
-from nade.modems.cpfsk import LiquidFourFSKModem, LiquidBFSKModem
+from nade.modems import LiquidFourFSKModem, LiquidBFSKModem
 from nade.modems.imodem import ModemConfig
 
 
@@ -31,9 +31,9 @@ def test_cpfsk_loopback_decodes(modem_cls, params):
     got = []
     # Up to 600 blocks (~12s at 20ms per block) to flush one frame end-to-end
     for _ in range(600):
-        blk = tx.pull_tx_block(t)
+        blk = tx.push_tx_block(t)
         assert isinstance(blk, np.ndarray) and blk.dtype == np.int16 and blk.shape == (160,)
-        rx.push_rx_block(blk, t)
+        rx.pull_rx_block(blk, t)
         frames = rx.rx_dequeue(8)
         got.extend(frames)
         if any(fr == payload for fr in got):
