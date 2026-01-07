@@ -378,7 +378,7 @@ class LiquidFSKModem(IModem):
 
             self._tx_phase = (self._tx_phase + self._carrier_symbol_phase) % (2.0 * math.pi)
         
-        # CRITICAL FIX: Clear bit bucket when transitioning from TX to idle
+        # Clear bit bucket when transitioning from TX to idle
         # This ensures RX starts with a clean slate, no residual bits from TX
         if had_tx_symbols and not self._tx_syms:
             if self._bit_bucket.count != 0:
@@ -427,19 +427,19 @@ class LiquidFSKModem(IModem):
                 cfo_hz = rad_per_sample * (self.SR / (2.0 * math.pi))
             except Exception:
                 cfo_hz = 0.0
-            # self.log("metric", {
-            #     "event": "demod",
-            #     "bits_per_symbol": self.bits_per_symbol,
-            #     "sps": self.SPS,
-            #     "rx_syms": int(self._metric_rx_symbols),
-            #     "rx_bytes": int(self._metric_rx_bytes_total),
-            #     "preamble_hits": int(self._metric_preamble_hits),
-            #     "frames": int(self._metric_frames_decoded),
-            #     "rx_queue_frames": int(len(self._rx_frames)),
-            #     "cfo_hz_est": float(cfo_hz),
-            #     "sym_head": block_syms[:16],
-            #     "sym_count": len(block_syms),
-            # })
+            self.log("metric", {
+                "event": "demod",
+                "bits_per_symbol": self.bits_per_symbol,
+                "sps": self.SPS,
+                "rx_syms": int(self._metric_rx_symbols),
+                "rx_bytes": int(self._metric_rx_bytes_total),
+                "preamble_hits": int(self._metric_preamble_hits),
+                "frames": int(self._metric_frames_decoded),
+                "rx_queue_frames": int(len(self._rx_frames)),
+                "cfo_hz_est": float(cfo_hz),
+                "sym_head": block_syms[:16],
+                "sym_count": len(block_syms),
+            })
         except Exception:
             pass
 
@@ -464,6 +464,7 @@ class LiquidFSKModem(IModem):
 
     # ---------------------------------------------------------------- helpers
     def _handle_symbol(self, sym: int) -> None:
+        # Always feed byte-oriented path (BFSK and generic fallback)
         bytes_out = list(self._bit_bucket.push(sym, self.bits_per_symbol))
         if bytes_out:
             self.log("debug", f"_handle_symbol: sym={sym} bytes_out={bytes_out}")
@@ -499,15 +500,11 @@ class LiquidFSKModem(IModem):
         return preamble + sync + bytes([ln]) + payload + bytes([checksum])
 
     def _drain_frames(self) -> None:
-        """
-        Drain complete frames from rx_bytes buffer.
-        """
         while len(self._rx_frames) > self.cfg.max_rx_frames:
             self._rx_frames.popleft()
 
         buf = self._rx_bytes
         self.log("debug", f"_drain_frames: rx_bytes length={len(buf)}")
-        
         while True:
             if len(self._rx_frames) >= self.cfg.max_rx_frames:
                 return
@@ -535,7 +532,7 @@ class LiquidFSKModem(IModem):
                     for _ in range(skip_count):
                         buf.popleft()
                     
-                    # CRITICAL FIX: Clear bit bucket after skipping garbage
+                    # Clear bit bucket after skipping garbage
                     # The preamble 0x55 = 01010101 marks a byte boundary
                     if self._bit_bucket.count != 0:
                         self.log("info", f"Cleared {self._bit_bucket.count} residual bits after finding preamble")
