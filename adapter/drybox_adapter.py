@@ -72,6 +72,7 @@ class Adapter:
         self._noise: Optional[NoiseXKWrapper] = None
         self._handshake_started = False
         self._pending_handshake = True
+        self._both_handshake_complete = False   # TODO: use noise_wrapper state variable
 
         # TX queue for encrypted SDUs (Noise inside Audio)
         self._audio_tx_sdu_q: Deque[bytes] = deque()
@@ -192,12 +193,14 @@ class Adapter:
             self._noise.start_handshake(initiator=(self.side == INITIATOR_SIDE))
             self._audio_logger("info", f"[Noise] Starting NoiseXK handshake (initiator={self.side == INITIATOR_SIDE})")
         
-        if self._noise:
+        if self._noise and self._both_handshake_complete == False:
             hs_msg = self._noise.get_next_handshake_message()
             if hs_msg:
                 self._audio_logger("info",
                     f"[NoiseXK] TX handshake msg len={len(hs_msg)} hex={hs_msg.hex()[:32]}...")
                 self._audio_stack.tx_enqueue(hs_msg)
+            elif self._noise.handshake_complete:
+                self._both_handshake_complete = True
             
         # ---- Encrypted SDU TX ----
         if self._audio_tx_sdu_q:
