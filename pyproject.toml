@@ -24,7 +24,7 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["nade", "adapter"]
+include = ["nade", "nade.*", "adapter", "adapter.*"]
 
 [project.entry-points."drybox.adapters"]
 # DryBox v1 currently loads adapters via module path specs (path/to/file.py:Class).
