@@ -304,6 +304,12 @@ class Adapter:
         )
 
         self._audio_tx_sdu_q.append(ct)
+    
+    def is_handshake_complete(self) -> bool:
+        """Query handshake state without side effects."""
+        if self.mode != "audio" or not self._noise:
+            return False
+        return self._noise.handshake_complete
 
     
     # ----------------------------------------------------------------------

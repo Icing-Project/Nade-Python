@@ -358,9 +358,6 @@ class LiquidFSKModem(IModem):
         out = np.empty(self.BLK, dtype=np.int16)
         amp = float(self._amp)
         
-        # Track if we had symbols to transmit at the start of this block
-        had_tx_symbols = bool(self._tx_syms)
-
         for idx in range(self.SYMS_PER_BLK):
             if self._tx_syms:
                 sym = self._tx_syms.popleft()
@@ -377,13 +374,6 @@ class LiquidFSKModem(IModem):
             out[start:start + self.SPS] = scaled
 
             self._tx_phase = (self._tx_phase + self._carrier_symbol_phase) % (2.0 * math.pi)
-        
-        # Clear bit bucket when transitioning from TX to idle
-        # This ensures RX starts with a clean slate, no residual bits from TX
-        if had_tx_symbols and not self._tx_syms:
-            if self._bit_bucket.count != 0:
-                self.log("info", f"TX→idle: clearing {self._bit_bucket.count} residual RX bits")
-                self._bit_bucket.clear()
 
         return out
 
@@ -410,10 +400,10 @@ class LiquidFSKModem(IModem):
             chunk = np.ascontiguousarray(self._rx_buffer[:self.SPS])
             self._rx_buffer = self._rx_buffer[self.SPS:]
             sym = self._backend.demodulate(self._dem_handle, chunk)
-            self._handle_symbol(sym)
             self._metric_rx_symbols += 1
             block_syms.append(int(sym))
 
+        self._handle_symbols(block_syms)
         self._drain_frames()
         self._drain_frames_symbol()
 
@@ -437,8 +427,6 @@ class LiquidFSKModem(IModem):
                 "frames": int(self._metric_frames_decoded),
                 "rx_queue_frames": int(len(self._rx_frames)),
                 "cfo_hz_est": float(cfo_hz),
-                "sym_head": block_syms[:16],
-                "sym_count": len(block_syms),
             })
         except Exception:
             pass
@@ -463,17 +451,32 @@ class LiquidFSKModem(IModem):
                 pass
 
     # ---------------------------------------------------------------- helpers
-    def _handle_symbol(self, sym: int) -> None:
-        # Always feed byte-oriented path (BFSK and generic fallback)
-        bytes_out = list(self._bit_bucket.push(sym, self.bits_per_symbol))
-        if bytes_out:
-            self.log("debug", f"_handle_symbol: sym={sym} bytes_out={bytes_out}")
-        for byte in bytes_out:
-            self._rx_bytes.append(byte)
-            self._metric_rx_bytes_total += 1
-        # Additionally keep symbols for 4FSK symbol-domain parsing
-        if self.bits_per_symbol == 2:
-            self._rx_symbols.append(sym & 0x3)
+    def _handle_symbols(self, block_syms: List[int] = []) -> None:
+        self.log("debug", f"_handle_symbols: block_syms={block_syms}")
+        
+        # Remove all noise if no preamble is found
+        if len(self._rx_bytes) != 0:
+            found_preamble = False
+            for current_byte in self._rx_bytes:
+                if current_byte == 0x55:
+                    found_preamble = True
+                    break
+            if not found_preamble and all(b == 0 for b in block_syms):
+                return
+            
+        for sym in block_syms:
+            # Always feed byte-oriented path (BFSK and generic fallback)
+            bytes_out = list(self._bit_bucket.push(sym, self.bits_per_symbol))
+            if bytes_out:
+                self.log("debug", f"_handle_symbols: bytes_out={bytes_out}")
+            for byte in bytes_out:
+                self._rx_bytes.append(byte)
+                self._metric_rx_bytes_total += 1
+            # Additionally keep symbols for 4FSK symbol-domain parsing
+            if self.bits_per_symbol == 2:
+                self._rx_symbols.append(sym & 0x3)
+            
+        self.log("debug", f"_handle_symbols: _rx_bytes={self._rx_bytes}")
 
     def _bytes_to_symbols(self, data: bytes) -> Iterable[int]:
         mask = (1 << self.bits_per_symbol) - 1
@@ -511,7 +514,7 @@ class LiquidFSKModem(IModem):
                 
             if len(buf) < 19:
                 return
-
+            
             # Count consecutive 0x55 bytes at the start
             preamble_len = 0
             while preamble_len < len(buf) and buf[preamble_len] == 0x55:
@@ -639,6 +642,7 @@ class LiquidFSKModem(IModem):
         return ((syms[0] & 0x3) << 6) | ((syms[1] & 0x3) << 4) | ((syms[2] & 0x3) << 2) | (syms[3] & 0x3)
 
     def _drain_frames_symbol(self) -> None:
+        # Unused at the moment and untested
         if self.bits_per_symbol != 2:
             return
         PRE_SYM = 1
@@ -729,7 +733,3 @@ class LiquidFSKModem(IModem):
                 self._sym_expect = []
                 self._sym_tmp_symbols.clear()
                 continue
-
-
-
-
