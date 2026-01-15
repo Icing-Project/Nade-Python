@@ -110,11 +110,7 @@ class NoiseXKWrapper:
             self.debug(f"[NoiseXK] Processing HS msg ({len(data)} bytes): {data.hex()}")
             
             payload = bytearray()
-            
-            # CRITICAL: This is usually where decryption/parsing fails
             cs_pair_read = self._hs.read_message(data, payload)
-            
-            self.debug(f"[NoiseXK] Processing HS msg ({len(data)} bytes): {data.hex()}")
             
             if cs_pair_read:
                 self._complete_handshake(cs_pair_read)
