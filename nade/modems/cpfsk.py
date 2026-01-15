@@ -419,13 +419,12 @@ class LiquidFSKModem(IModem):
                 cfo_hz = 0.0
             self.log("metric", {
                 "event": "demod",
-                "bits_per_symbol": self.bits_per_symbol,
-                "sps": self.SPS,
-                "rx_syms": int(self._metric_rx_symbols),
-                "rx_bytes": int(self._metric_rx_bytes_total),
-                "preamble_hits": int(self._metric_preamble_hits),
-                "frames": int(self._metric_frames_decoded),
-                "rx_queue_frames": int(len(self._rx_frames)),
+                "symbols": block_syms,
+                "rx_queue_length": len(self._rx_frames),
+                "total_symbols_received": int(self._metric_rx_symbols),
+                "total_bytes_processed": int(self._metric_rx_bytes_total),
+                "total__valid_preamble": int(self._metric_preamble_hits),
+                "total_valid_frames": int(self._metric_frames_decoded),
                 "cfo_hz_est": float(cfo_hz),
             })
         except Exception:
@@ -452,8 +451,6 @@ class LiquidFSKModem(IModem):
 
     # ---------------------------------------------------------------- helpers
     def _handle_symbols(self, block_syms: List[int] = []) -> None:
-        self.log("debug", f"_handle_symbols: block_syms={block_syms}")
-        
         # Remove all noise if no preamble is found
         if len(self._rx_bytes) != 0:
             found_preamble = False
@@ -468,15 +465,15 @@ class LiquidFSKModem(IModem):
             # Always feed byte-oriented path (BFSK and generic fallback)
             bytes_out = list(self._bit_bucket.push(sym, self.bits_per_symbol))
             if bytes_out:
-                self.log("debug", f"_handle_symbols: bytes_out={bytes_out}")
-            for byte in bytes_out:
-                self._rx_bytes.append(byte)
-                self._metric_rx_bytes_total += 1
+                self.log("debug", f"_handle_symbols: byte_received=[{fmt_bytes_hex(bytes_out)}]")
+                for byte in bytes_out:
+                    self._rx_bytes.append(byte)
+                    self._metric_rx_bytes_total += 1
+                self.log("debug", f"_handle_symbols: rx_queue=[{fmt_bytes_hex(self._rx_bytes)}]")
+                
             # Additionally keep symbols for 4FSK symbol-domain parsing
             if self.bits_per_symbol == 2:
                 self._rx_symbols.append(sym & 0x3)
-            
-        self.log("debug", f"_handle_symbols: _rx_bytes={self._rx_bytes}")
 
     def _bytes_to_symbols(self, data: bytes) -> Iterable[int]:
         mask = (1 << self.bits_per_symbol) - 1
@@ -507,7 +504,6 @@ class LiquidFSKModem(IModem):
             self._rx_frames.popleft()
 
         buf = self._rx_bytes
-        self.log("debug", f"_drain_frames: rx_bytes length={len(buf)}")
         while True:
             if len(self._rx_frames) >= self.cfg.max_rx_frames:
                 return
@@ -608,7 +604,7 @@ class LiquidFSKModem(IModem):
             expected_checksum = (sum(payload) + ln) & 0xFF
             
             if expected_checksum == checksum:
-                self.log("info", f"✓ Valid frame: len={ln}, checksum=0x{checksum:02x}")
+                self.log("info", f"Valid frame: len={ln}, checksum=0x{checksum:02x}")
                 
                 if len(self._rx_frames) >= self.cfg.max_rx_frames:
                     self._rx_frames.popleft()
@@ -733,3 +729,6 @@ class LiquidFSKModem(IModem):
                 self._sym_expect = []
                 self._sym_tmp_symbols.clear()
                 continue
+
+def fmt_bytes_hex(data):
+    return " ".join(f"0x{b:02X}" for b in data)
