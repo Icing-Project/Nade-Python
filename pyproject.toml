@@ -17,7 +17,11 @@ dependencies = [
     "cffi>=1.17.0",
     "liquid-dsp>=1.6.0",
     "pytest>=8.3.3",
+    "PyAudio>=0.2.14",
 ]
+
+[project.optional-dependencies]
+audio = ["PyAudio>=0.2.14"]
 
 [tool.setuptools]
 include-package-data = true

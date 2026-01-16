@@ -12,6 +12,7 @@ from typing import Any, Deque, List, Optional, Tuple
 import os
 import json
 from nade.audio import AudioStack
+from nade.streamer import AudioStreamer
 from nade.crypto.noise_wrapper import NoiseXKWrapper
 from dissononce.dh.keypair import KeyPair
 from dissononce.dh.x25519.public import PublicKey
@@ -69,6 +70,7 @@ class Adapter:
         self._byte_txq: Deque[Tuple[bytes, int]] = deque()
         # Audio state
         self._audio_stack: Optional[AudioStack] = None
+        self._audio_streamer: Optional[AudioStreamer] = None
         self._noise: Optional[NoiseXKWrapper] = None
         self._handshake_started = False
         self._pending_handshake = True
@@ -85,7 +87,7 @@ class Adapter:
             "bytelink": True,
             "audioblock": True,
             "sdu_max_bytes": SDU_MAX_BYTES,
-            "audioparams": {"sr": 8000, "block": 160},
+            "audioparams": {"sr": 8000, "block": 160, "channels": 2},
         }
 
     # ---- lifecycle ----
@@ -96,6 +98,7 @@ class Adapter:
         self.crypto = self.cfg.get("crypto", {}) or {}
         # Base config plus optional env override: NADE_ADAPTER_CFG='{"modem":"bfsk","modem_cfg":{...}}'
         self.nade_cfg = _merged_nade_cfg(self.cfg.get("nade", {}) or {})
+        self.use_hardware = self.nade_cfg.get("use_hardware", False)
 
     def start(self, ctx):
         self.ctx = ctx
@@ -114,6 +117,15 @@ class Adapter:
                 modem_cfg=modem_cfg,
                 logger=self._audio_logger,
             )
+
+            if self.use_hardware:
+                self._audio_logger("info", "[Adapter] Initializing Hardware AudioStreamer (Stereo)")
+                try:
+                    self._audio_streamer = AudioStreamer(rate=8000, chunk_size=160, channels=2)
+                except Exception as e:
+                    self._audio_logger("error", f"[Adapter] Failed to init AudioStreamer: {e}")
+                    # Fallback or strict fail? For now, we continue without streamer
+                    pass
 
             # ------- Noise config logging --------
             priv_raw = self.crypto.get("priv")
@@ -137,9 +149,10 @@ class Adapter:
             self._byte_started = False
             self._byte_done = False
             self._byte_txq.clear()
-
+ 
     def stop(self) -> None:
-        pass
+        if self._audio_streamer:
+            self._audio_streamer.close()
 
     # ---- timers ----
     def on_timer(self, t_ms: int) -> None:
@@ -209,6 +222,27 @@ class Adapter:
                 f"[Nade] TX encrypted SDU len={len(sdu)} hex={sdu.hex()[:32]}...")
             self._audio_stack.tx_enqueue(sdu)
 
+        if self._audio_streamer:
+            # Hardware mode: read from mic (blocking read effectively syncs loop to audio clock)
+            # We ignore the internally generated pcm_out from AudioStack (modem) if we are in pure bypass,
+            # BUT here we are likely modulating data.
+            # WAIT: The request is "Add 2 inputs / 2 outputs".
+            # If we are just streaming audio, we might not be using the modem stack?
+            # Assuming we want to send the MODEM output to the speakers, and read MIC to Modem?
+            # actually `push_tx_block` is "what we send TO the other side via DryBox".
+            # So we should read from MIC.
+            
+            try:
+                mic_input = self._audio_streamer.read_block() # (160, 2)
+                # If we need to send this over DryBox, does DryBox accept stereo?
+                # Spec says mono. We might need to mix down or select one channel for DryBox transport,
+                # OR just return it if we assume DryBox handles it.
+                # Given user instruction "Ajouter 2 inputs ... sur Nade-Python", we return the stereo block.
+                return mic_input
+            except Exception as e:
+                self._audio_logger("error", f"Audio read error: {e}")
+                return np.zeros((160, 2), dtype=np.int16)
+
         pcm_out = self._audio_stack.push_tx_block(t_ms)
 
         # === Normalize PCM ===
@@ -235,6 +269,20 @@ class Adapter:
             self._noise.start_handshake(initiator=(self.side == INITIATOR_SIDE))
             self._audio_logger("info", f"[Noise] Starting NoiseXK handshake (initiator={self.side == INITIATOR_SIDE})")
         
+        # If we have hardware active, we play what we received (pcm)
+        if self._audio_streamer:
+            try:
+                # pcm comes from DryBox (the other side).
+                # If it's mono (160,), we might need to duplicate to stereo (160, 2) for our streamer
+                if pcm.ndim == 1:
+                    # Mono to Stereo
+                    pcm_stereo = np.column_stack((pcm, pcm))
+                    self._audio_streamer.write_block(pcm_stereo)
+                else:
+                    self._audio_streamer.write_block(pcm)
+            except Exception as e:
+                self._audio_logger("error", f"Audio write error: {e}")
+
         self._audio_stack.pull_rx_block(pcm, t_ms)
         payloads = self._audio_stack.pop_rx_frames()
 

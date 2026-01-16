@@ -1,4 +1,5 @@
 from .audio import AudioStack
+from .streamer import AudioStreamer
 from .crypto.noise_wrapper import NoiseXKWrapper
 from .modems import LiquidFourFSKModem, LiquidBFSKModem
 
@@ -11,6 +12,7 @@ __all__ = [
     "LiquidBFSKModem",
     "LiquidFourFSKModem",
     "FourFSKModem",
+    "AudioStreamer",
 ]
 
 __version__ = "0.1.0"
