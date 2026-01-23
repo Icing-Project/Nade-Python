@@ -150,7 +150,6 @@ class NoiseXKWrapper:
         error_details += f"Stack Trace:\n{tb_str}"
         error_details += "========================================="
         
-        # Use your existing logger
         self.debug("error", error_details)
 
 
@@ -176,9 +175,7 @@ class NoiseXKWrapper:
             self._send_cs, self._recv_cs = cs0, cs1
         else:
             self._send_cs, self._recv_cs = cs1, cs0
-        print(f"[NoiseXK] handshake complete; secure channel ready")
         self.handshake_complete = True
-        self.debug("[NoiseXK] handshake complete; secure channel ready")
 
     # ---------------- rekey ----------------
     def begin_rekey(self):
