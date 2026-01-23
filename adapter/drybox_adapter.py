@@ -259,12 +259,7 @@ class Adapter:
                     self._audio_logger("error",f"[NoiseXK] ERROR while processing handshake message: {e}")
                     continue
 
-                self._audio_logger("info",
-                    f"[NoiseXK] Handshake state: complete={self._noise.handshake_complete}")
-
-                if self._noise.handshake_complete:
-                    self._audio_logger("info", "[NoiseXK] Handshake COMPLETED")
-                    self.ctx.emit_event("handshake_complete", {"side": self.side})
+                self._audio_logger("msg", f"[NoiseXK] Handshake state: complete={self._noise.handshake_complete}")
 
                 continue
 
@@ -275,8 +270,7 @@ class Adapter:
                     "info",
                     f"[Nade] RX decrypted SDU len={len(plaintext)} text={plaintext!r}"
                 )
-                self.ctx.emit_event("text_rx",
-                    {"text": plaintext.decode("utf-8", errors="ignore")})
+                self._audio_logger("msg", {"Received a message: ": plaintext.decode("utf-8", errors="ignore")})
             except Exception as e:
                 self._audio_logger("error",
                     f"[NoiseXK] decrypt_sdu FAILED: {e} (len={len(frame)})")
@@ -319,6 +313,6 @@ class Adapter:
         if level == "metric" and isinstance(payload, dict):
             self.ctx.emit_event("metric", payload)
         elif isinstance(payload, str):
-            self.ctx.emit_event("log", {"level": "info", "msg": payload})
+            self.ctx.emit_event("log", {"level": level, "msg": payload})
         else:
             self.ctx.emit_event("log", {"level": str(level), "msg": str(payload)})
