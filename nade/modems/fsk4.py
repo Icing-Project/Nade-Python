@@ -12,6 +12,9 @@ class LiquidFourFSKModem(LiquidFSKModem):
         params.setdefault("samples_per_symbol", 40)
         params.setdefault("bandwidth", 0.18)
         params.setdefault("carrier_hz", 1300.0)
+        # Enable CFO tracking by default for 4FSK as it is more sensitive to Doppler
+        params.setdefault("cfo_track", True)
+        params.setdefault("cfo_max_hz", 100.0)
         super().__init__(cfg=cfg, logger=logger, **params)
 
 

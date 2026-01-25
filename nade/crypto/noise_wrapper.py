@@ -114,22 +114,39 @@ class NoiseXKWrapper:
             # CRITICAL: This is usually where decryption/parsing fails
             cs_pair_read = self._hs.read_message(data, payload)
             
-            self.debug(f"[NoiseXK] Processing HS msg ({len(data)} bytes): {data.hex()}")
+            self.debug(f"[NoiseXK] read_message returned cs_pair={cs_pair_read is not None}")
             
-            if cs_pair_read:
-                self._complete_handshake(cs_pair_read)
-                return
-            
-            # If a response is required, queue it
+            # IMPORTANT FIX: Even if read_message returns cipher states (meaning the pattern
+            # is done reading), we may still need to send a response message.
+            # For XK pattern: Initiator must send M3 after receiving M2.
             out = bytearray()
-            cs_pair_write = self._hs.write_message(b'', out)
+            cs_pair_write = None
+            
+            try:
+                self.debug(f"[NoiseXK] Attempting write_message...")
+                cs_pair_write = self._hs.write_message(b'', out)
+                self.debug(f"[NoiseXK] write_message returned cs_pair={cs_pair_write is not None}, out_len={len(out)}")
+            except StopIteration:
+                # Pattern is complete, no more messages to write
+                self.debug(f"[NoiseXK] write_message raised StopIteration (pattern done)")
+            except IndexError as ie:
+                # Handshake pattern exhausted
+                self.debug(f"[NoiseXK] write_message raised IndexError: {ie}")
+            except Exception as we:
+                # Unexpected error - log but don't crash
+                self.debug(f"[NoiseXK] write_message failed: {type(we).__name__}: {we}")
+                print(f"[NoiseXK] write_message exception: {type(we).__name__}: {we}")
             
             if out:
                 self.outgoing_messages.append(bytes(out))
                 self.debug(f"[NoiseXK] Queued HS response ({len(out)} bytes): {bytes(out).hex()}")
+                print(f"[NoiseXK] Queued M3 response ({len(out)} bytes)")
             
+            # Complete handshake only after both read AND write are done
             if cs_pair_write:
                 self._complete_handshake(cs_pair_write)
+            elif cs_pair_read:
+                self._complete_handshake(cs_pair_read)
 
         except Exception as e:
             # 4. Contextual Logging

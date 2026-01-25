@@ -13,10 +13,17 @@ import numpy as np
 from .imodem import BackpressurePolicy, IModem, Int16Block, ModemConfig
 
 
+def fmt_bytes_hex(data: Iterable[int]) -> str:
+    return " ".join(f"{b:02x}" for b in data)
+
+
 class _LiquidFSKLibrary:
     """ctypes bridge for the subset of liquid-dsp FSK routines we need."""
 
     _instance: Optional["_LiquidFSKLibrary"] = None
+    
+    def log(self, level: str, msg: str) -> None:
+        print(f"[LiquidFSKLibrary] {level}: {msg}")
 
     def __init__(self) -> None:
         try:
@@ -231,6 +238,7 @@ class LiquidFSKModem(IModem):
         self._rx_phase = 0.0
 
         self._bit_bucket = _BitBucket()
+        self._rx_first_block = True
 
         self.cfg = ModemConfig(sample_rate_hz=8000, block_size=160) if cfg is None else cfg
         self.configure(self.cfg)
@@ -285,6 +293,7 @@ class LiquidFSKModem(IModem):
         self._tx_phase = 0.0
         self._rx_phase = 0.0
         self._backend.reset_hilbert(getattr(self, "_hilbert_handle", None))
+        self._rx_first_block = True
 
         # Reset runtime instrumentation at (re)configure
         self._metric_rx_symbols = 0
@@ -321,6 +330,7 @@ class LiquidFSKModem(IModem):
         self._tx_phase = 0.0
         self._rx_phase = 0.0
         self._backend.reset_hilbert(self._hilbert_handle)
+        self._rx_first_block = True
 
     def close(self) -> None:
         self._backend.destroy_mod(self._mod_handle)
@@ -388,7 +398,19 @@ class LiquidFSKModem(IModem):
         return out
 
     def pull_rx_block(self, pcm: Int16Block, t_ms: int) -> None:
-        norm = pcm.astype(np.float32) / float(self._amp)
+        if t_ms % 500 == 0:
+            pass
+
+
+        # Normalize by int16 full range to preserve FSK frequency deviation
+        # Note: Do NOT divide by actual signal amplitude - that would scale the
+        # frequency deviation incorrectly. FSK depends on absolute amplitude ratios.
+        norm = pcm.astype(np.float32) / 32768.0
+        
+        if t_ms % 500 == 0:
+            pass
+
+
         self._backend.hilbert_r2c(self._hilbert_handle, norm, self._analytic_tmp)
         phase_rot = np.complex64(math.cos(self._rx_phase) - 1j * math.sin(self._rx_phase))
         mix_block = self._carrier_block if self._rx_mix_sign < 0 else np.conj(self._carrier_block)
@@ -400,80 +422,98 @@ class LiquidFSKModem(IModem):
             baseband = self._analytic_tmp * (mix_block * phase_rot)
         self._rx_phase = (self._rx_phase + self._carrier_block_phase) % (2.0 * math.pi)
 
+        # Compensation for Hilbert filter and TX/RX filter group delays
+        # Valid range is 13-20 samples; we use 16 (center) for maximum tolerance
+        # IMPORTANT: Only apply when we detect actual signal energy, not on first block
+        # (which might be silence while waiting for the other side to transmit)
+        if self._rx_first_block:
+            # Check if this block has significant signal energy (carrier present)
+            block_energy = np.mean(np.abs(baseband))
+            carrier_threshold = 0.05  # Empirical threshold for carrier detection
+            
+
+            
+            if block_energy > carrier_threshold:
+                # Carrier detected! Apply delay compensation now
+                delay = 16
+                if baseband.size > delay:
+                    baseband = baseband[delay:]
+                    self._rx_first_block = False
+
+                    self.log("debug", f"Carrier detected (energy={block_energy:.3f}), applied {delay}-sample delay compensation")
+                else:
+
+                    baseband = np.zeros(0, dtype=np.complex64)
+            # If no carrier yet, skip this block entirely (don't accumulate noise)
+            else:
+                #  No carrier (energy < threshold), skipping block")
+                baseband = np.zeros(0, dtype=np.complex64)
+
         if self._rx_buffer.size == 0:
             self._rx_buffer = baseband
         else:
             self._rx_buffer = np.concatenate((self._rx_buffer, baseband))
+
+        # DEBUG: Check energy in RX buffer
+        if t_ms % 1000 == 0:
+             pass
+
 
         block_syms: List[int] = []
         while self._rx_buffer.size >= self.SPS:
             chunk = np.ascontiguousarray(self._rx_buffer[:self.SPS])
             self._rx_buffer = self._rx_buffer[self.SPS:]
             sym = self._backend.demodulate(self._dem_handle, chunk)
-            self._handle_symbol(sym)
             self._metric_rx_symbols += 1
             block_syms.append(int(sym))
+        
+        if t_ms % 1000 == 0:
+            pass
 
+
+        self._handle_symbols(block_syms)
         self._drain_frames()
         self._drain_frames_symbol()
 
-        # Emit lightweight demod progress metric
-        try:
-            # CFO estimate (rad/sample -> Hz), robust angle of sum(conj(x[n]) * x[n+1])
-            cfo_hz = 0.0
-            try:
-                v = np.vdot(baseband[:-1], baseband[1:])
-                rad_per_sample = float(np.angle(v))
-                cfo_hz = rad_per_sample * (self.SR / (2.0 * math.pi))
-            except Exception:
-                cfo_hz = 0.0
-            self.log("metric", {
-                "event": "demod",
-                "bits_per_symbol": self.bits_per_symbol,
-                "sps": self.SPS,
-                "rx_syms": int(self._metric_rx_symbols),
-                "rx_bytes": int(self._metric_rx_bytes_total),
-                "preamble_hits": int(self._metric_preamble_hits),
-                "frames": int(self._metric_frames_decoded),
-                "rx_queue_frames": int(len(self._rx_frames)),
-                "cfo_hz_est": float(cfo_hz),
-                "sym_head": block_syms[:16],
-                "sym_count": len(block_syms),
-            })
-        except Exception:
-            pass
+        if t_ms % 500 == 0:
+             pass
 
-        # Update CFO estimate for next block
-        if self._cfo_track:
-            try:
-                target_rps = float(cfo_hz) * (2.0 * math.pi) / float(self.SR)
-                max_rps = float(self._cfo_max_hz) * (2.0 * math.pi) / float(self.SR)
-                # clamp
-                if target_rps > max_rps:
-                    target_rps = max_rps
-                elif target_rps < -max_rps:
-                    target_rps = -max_rps
-                a = self._cfo_alpha
-                if a < 0.0:
-                    a = 0.0
-                if a > 1.0:
-                    a = 1.0
-                self._cfo_rps_est = (1.0 - a) * self._cfo_rps_est + a * target_rps
-            except Exception:
-                pass
+
+        # CFO tracking disabled - the liquid-dsp fskdem doesn't expose frequency
+        # error estimates. A future implementation would need to compute CFO
+        # from baseband signal correlation or use a separate PLL.
+        # For now, the modem relies on short frame sizes to limit Doppler impact.
 
     # ---------------------------------------------------------------- helpers
-    def _handle_symbol(self, sym: int) -> None:
-        # Always feed byte-oriented path (BFSK and generic fallback)
-        bytes_out = list(self._bit_bucket.push(sym, self.bits_per_symbol))
-        if bytes_out:
-            self.log("debug", f"_handle_symbol: sym={sym} bytes_out={bytes_out}")
-        for byte in bytes_out:
-            self._rx_bytes.append(byte)
-            self._metric_rx_bytes_total += 1
-        # Additionally keep symbols for 4FSK symbol-domain parsing
-        if self.bits_per_symbol == 2:
-            self._rx_symbols.append(sym & 0x3)
+    def _handle_symbols(self, block_syms: List[int] = []) -> None:
+        # Debug: Log all symbols received
+        if block_syms:
+            # self.log("debug", f"[DEMOD] symbols={block_syms} total_rx_bytes={len(self._rx_bytes)}")
+            pass
+        
+        # Remove all noise if no preamble is found
+        if len(self._rx_bytes) != 0:
+            found_preamble = False
+            for current_byte in self._rx_bytes:
+                if current_byte == 0x55:
+                    found_preamble = True
+                    break
+            if not found_preamble and all(b == 0 for b in block_syms):
+                return
+            
+        for sym in block_syms:
+            # Always feed byte-oriented path (BFSK and generic fallback)
+            bytes_out = list(self._bit_bucket.push(sym, self.bits_per_symbol))
+            if bytes_out:
+                self.log("debug", f"_handle_symbols: byte_received=[{fmt_bytes_hex(bytes_out)}]")
+                for byte in bytes_out:
+                    self._rx_bytes.append(byte)
+                    self._metric_rx_bytes_total += 1
+                self.log("debug", f"_handle_symbols: rx_queue=[{fmt_bytes_hex(self._rx_bytes)}]")
+                
+            # Additionally keep symbols for 4FSK symbol-domain parsing
+            if self.bits_per_symbol == 2:
+                self._rx_symbols.append(sym & 0x3)
 
     def _bytes_to_symbols(self, data: bytes) -> Iterable[int]:
         mask = (1 << self.bits_per_symbol) - 1
@@ -509,7 +549,7 @@ class LiquidFSKModem(IModem):
             if len(self._rx_frames) >= self.cfg.max_rx_frames:
                 return
                 
-            if len(buf) < 19:
+            if len(buf) < 12:
                 return
 
             # Count consecutive 0x55 bytes at the start
@@ -546,11 +586,13 @@ class LiquidFSKModem(IModem):
             
             # Case 2: We have some 0x55 bytes but fewer than 8 - wait for more
             if preamble_len < 8:
+
                 self.log("debug", f"Partial preamble ({preamble_len} bytes), waiting for more")
                 return
             
             # Case 3: We have 8+ preamble bytes - check for sync word
             if preamble_len + 2 > len(buf):
+
                 self.log("debug", f"Have preamble ({preamble_len} bytes), waiting for sync")
                 return
             
@@ -559,24 +601,27 @@ class LiquidFSKModem(IModem):
             
             # Case 4: Bad sync word - drop one preamble byte and retry
             if sync1 != 0xD3 or sync2 != 0x91:
+
                 dropped = buf.popleft()
-                self.log("debug", f"Bad sync after preamble: expected [D3 91], got [{sync1:02x} {sync2:02x}], dropped 0x{dropped:02x}")
+                # print(f"[DEBUG] Bad sync: expected [D3 91], got [{sync1:02x} {sync2:02x}]. Dropped 0x{dropped:02x}")
                 continue
             
             # Case 5: Valid preamble + sync - check if we have complete frame
             if preamble_len + 3 > len(buf):
-                self.log("debug", f"Have preamble+sync, waiting for length byte")
+
+                # self.log("debug", f"Have preamble+sync, waiting for length byte")
                 return
             
             ln = buf[preamble_len + 2]
             total_needed = preamble_len + 2 + 1 + ln + 1
             
             if len(buf) < total_needed:
-                self.log("debug", f"Waiting for complete frame (have {len(buf)}, need {total_needed})")
+                # self.log("debug", f"Waiting for complete frame (have {len(buf)}, need {total_needed})")
                 return
 
             # Case 6: We have a complete frame - process it
             self._metric_preamble_hits += 1
+            # print(f"[DEBUG] Found potential frame: len={ln} total_needed={total_needed}")
             
             # Consume preamble
             for _ in range(preamble_len):
@@ -586,13 +631,13 @@ class LiquidFSKModem(IModem):
             s1 = buf.popleft()
             s2 = buf.popleft()
             if s1 != 0xD3 or s2 != 0x91:
-                self.log("debug", f"Sync verification failed during consume")
+                # print(f"[DEBUG] Sync verification failed during consume")
                 continue
 
             # Consume length
             ln2 = buf.popleft()
             if ln2 != ln:
-                self.log("debug", f"Length mismatch: {ln2} != {ln}")
+                # print(f"[DEBUG] Length mismatch: {ln2} != {ln}")
                 continue
 
             # Consume payload
@@ -605,6 +650,7 @@ class LiquidFSKModem(IModem):
             expected_checksum = (sum(payload) + ln) & 0xFF
             
             if expected_checksum == checksum:
+                # print(f"[DEBUG] ✓ Valid frame: len={ln}, checksum=0x{checksum:02x}")
                 self.log("info", f"✓ Valid frame: len={ln}, checksum=0x{checksum:02x}")
                 
                 if len(self._rx_frames) >= self.cfg.max_rx_frames:
@@ -623,7 +669,8 @@ class LiquidFSKModem(IModem):
                 except Exception:
                     pass
             else:
-                self.log("debug", f"Checksum failed: expected=0x{expected_checksum:02x}, got=0x{checksum:02x}")
+                print(f"[DEBUG] Checksum failed: expected=0x{expected_checksum:02x}, got=0x{checksum:02x}")
+
 
     def _pending_frames(self) -> List[int]:
         return [1] if self._tx_syms else []
@@ -645,74 +692,92 @@ class LiquidFSKModem(IModem):
         PRE_WIN = 32
         THRESH = 0.75
 
-        while self._rx_symbols:
-            s = self._rx_symbols.popleft()
-            # update sliding window for preamble detection
-            self._sym_pre_win.append(s)
-            if s == PRE_SYM:
-                self._sym_pre_count += 1
-            if len(self._sym_pre_win) > PRE_WIN:
-                old = self._sym_pre_win.popleft()
-                if old == PRE_SYM:
-                    self._sym_pre_count -= 1
-
+        # Only process if we have data or need to process state
+        # (We use a loop to allow state transitions without waiting for new symbols)
+        while True:
             if self._sym_state == "search":
-                if len(self._sym_pre_win) == PRE_WIN and (self._sym_pre_count / PRE_WIN) >= THRESH:
-                    self._metric_preamble_hits += 1
-                    self._sym_state = "sync"
-                    self._sym_tmp_symbols.clear()
-                else:
-                    continue
+                if not self._rx_symbols:
+                    break
+                s = self._rx_symbols.popleft()
+                # update sliding window for preamble detection
+                self._sym_pre_win.append(s)
+                if s == PRE_SYM:
+                    self._sym_pre_count += 1
+                if len(self._sym_pre_win) > PRE_WIN:
+                    old = self._sym_pre_win.popleft()
+                    if old == PRE_SYM:
+                        self._sym_pre_count -= 1
 
-            if self._sym_state == "sync":
-                if len(self._rx_symbols) + len(self._sym_tmp_symbols) < 8:
-                    return
-                while len(self._sym_tmp_symbols) < 8 and self._rx_symbols:
-                    self._sym_tmp_symbols.append(self._rx_symbols.popleft())
-                b0 = self._symbols_to_byte(self._sym_tmp_symbols[:4])
-                b1 = self._symbols_to_byte(self._sym_tmp_symbols[4:8])
-                # Tolerant sync: accept if Hamming distance across both bytes <= threshold
-                exp0, exp1 = 0xD3, 0x91
-                hd = ((b0 ^ exp0) & 0xFF).bit_count() + ((b1 ^ exp1) & 0xFF).bit_count()
-                SYNC_HD_MAX = 3
-                if hd <= SYNC_HD_MAX:
-                    self._sym_state = "len"
-                    self._sym_tmp_symbols.clear()
-                else:
-                    last = self._sym_tmp_symbols[-1]
-                    self._sym_tmp_symbols.clear()
-                    self._sym_state = "search"
-                    self._sym_pre_win.clear()
-                    self._sym_pre_count = 1 if last == PRE_SYM else 0
-                    if last == PRE_SYM:
-                        self._sym_pre_win.append(last)
+                if len(self._sym_pre_win) == PRE_WIN and (self._sym_pre_count / PRE_WIN) >= THRESH:
+                    self.log("info", f"Preamble detected! Switch to sync_hunt.")
+                    self._metric_preamble_hits += 1
+                    self._sym_state = "sync_hunt"
+                    # Do not clear tmp_symbols here, we rely on rx_symbols
                 continue
 
-            if self._sym_state == "len":
-                if len(self._rx_symbols) < 4:
-                    return
-                syms = [self._rx_symbols.popleft() for _ in range(4)]
-                ln = self._symbols_to_byte(syms)
-                if ln < 0:
+            elif self._sym_state == "sync_hunt":
+                # Eat preamble tail (PRE_SYM)
+                while self._rx_symbols and self._rx_symbols[0] == PRE_SYM:
+                    self._rx_symbols.popleft()
+                
+                if len(self._rx_symbols) < 8:
+                    break # Wait for more
+                
+                # Peek next 8 symbols for Sync Word (0xD3 0x91 -> 3 1 0 3 2 1 0 1)
+                # We can't peek easily with deque without popping or iteration
+                # So we iterate.
+                candidate = [self._rx_symbols[i] for i in range(8)]
+                
+                b0 = self._symbols_to_byte(candidate[:4])
+                b1 = self._symbols_to_byte(candidate[4:8])
+                
+                exp0, exp1 = 0xD3, 0x91
+                hd = bin((b0 ^ exp0) & 0xFF).count('1') + bin((b1 ^ exp1) & 0xFF).count('1')
+                SYNC_HD_MAX = 3
+                
+                if hd <= SYNC_HD_MAX:
+                    self.log("info", f"Sync detected (HD={hd}). Frames aligned.")
+                    # Consume the sync word
+                    for _ in range(8):
+                        self._rx_symbols.popleft()
+                    self._sym_state = "len"
+                else:
+                    # Mismatch. Since we stripped PRE_SYM prefix, this means we hit something else.
+                    # It's a failure. Reset to search.
+                    # We consume one symbol to advance (avoid infinite loop if stuck on bad symbol)
+                    bad = self._rx_symbols.popleft()
+                    # self.log("debug", f"Sync failed (HD={hd}), dropped {bad}, resetting to search")
                     self._sym_state = "search"
                     self._sym_pre_win.clear()
                     self._sym_pre_count = 0
-                    continue
+                continue
+
+            elif self._sym_state == "len":
+                if len(self._rx_symbols) < 4:
+                    break
+                syms = [self._rx_symbols.popleft() for _ in range(4)]
+                ln = self._symbols_to_byte(syms)
+                # self.log("debug", f"Frame length: {ln}")
                 self._sym_needed = ln
                 self._sym_state = "payload"
                 self._sym_expect = []
                 continue
 
-            if self._sym_state == "payload":
+            elif self._sym_state == "payload":
                 need_syms = 4 * (self._sym_needed - len(self._sym_expect))
-                if len(self._rx_symbols) < need_syms + 4:
-                    return
+                if len(self._rx_symbols) < need_syms + 4: # +4 for checksum
+                    break
+                
+                # Consume payload
                 while len(self._sym_expect) < self._sym_needed:
                     syms = [self._rx_symbols.popleft() for _ in range(4)]
                     byte = self._symbols_to_byte(syms)
                     self._sym_expect.append(byte)
+                
+                # Consume checksum
                 c_syms = [self._rx_symbols.popleft() for _ in range(4)]
                 cval = self._symbols_to_byte(c_syms)
+                
                 checksum = (sum(self._sym_expect) + len(self._sym_expect)) & 0xFF
                 if checksum == cval:
                     if len(self._rx_frames) >= self.cfg.max_rx_frames:
@@ -723,13 +788,17 @@ class LiquidFSKModem(IModem):
                         self.log("metric", {"event": "frame_rx", "len": len(self._sym_expect), "hex_head": bytes(self._sym_expect[:16]).hex(), "path": "symbol"})
                     except Exception:
                         pass
+                    self.log("info", f"✓ Valid 4FSK frame decoded: len={len(self._sym_expect)}")
+                else:
+                    self.log("warn", f"Checksum failed: expected=0x{checksum:02x}, got=0x{cval:02x}")
+
                 self._sym_state = "search"
                 self._sym_pre_win.clear()
                 self._sym_pre_count = 0
                 self._sym_expect = []
-                self._sym_tmp_symbols.clear()
                 continue
-
-
-
-
+            
+            else:
+                # Should not happen
+                self._sym_state = "search"
+                continue
