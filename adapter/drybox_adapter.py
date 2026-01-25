@@ -196,12 +196,13 @@ class Adapter:
             if self._audio_playback_enabled and pyaudio:
                 try:
                     pa = pyaudio.PyAudio()
+                    # Use larger buffer (1024 instead of 160) to reduce choppiness
                     self._audio_output = pa.open(
                         format=pyaudio.paInt16,
                         channels=1,
                         rate=8000,
                         output=True,
-                        frames_per_buffer=160
+                        frames_per_buffer=1024
                     )
                     self._pa = pa  # Keep reference to prevent garbage collection
                     print(f"[AUDIO] Real-time playback ENABLED for side {self.side}")
@@ -210,6 +211,42 @@ class Adapter:
                     self._audio_output = None
             elif self._audio_playback_enabled:
                 print("[WARN] NADE_AUDIO_PLAYBACK=1 but pyaudio not available")
+            
+            # --- TX Audio Input from WAV file (optional) ---
+            self._tx_wav_samples = None
+            self._tx_wav_pos = 0
+            
+            # --- RX Audio time-stretch state ---
+            # Track when we last wrote audio to maintain proper timing
+            self._last_rx_audio_write_t = 0
+            self._last_decoded_pcm = None  # Hold last decoded PCM for gap filling
+            tx_wav_path = os.environ.get("NADE_TX_WAV", "")
+            if tx_wav_path and os.path.exists(tx_wav_path):
+                try:
+                    import wave
+                    with wave.open(tx_wav_path, 'rb') as wf:
+                        src_rate = wf.getframerate()
+                        src_channels = wf.getnchannels()
+                        n_frames = wf.getnframes()
+                        raw = wf.readframes(n_frames)
+                        
+                    # Convert to numpy
+                    samples = np.frombuffer(raw, dtype=np.int16)
+                    
+                    # Convert stereo to mono
+                    if src_channels == 2:
+                        samples = samples.reshape(-1, 2).mean(axis=1).astype(np.int16)
+                    
+                    # Resample if needed (simple decimation, not ideal but functional)
+                    if src_rate != 8000:
+                        ratio = src_rate / 8000
+                        indices = (np.arange(len(samples) // ratio) * ratio).astype(int)
+                        samples = samples[indices]
+                    
+                    self._tx_wav_samples = samples
+                    print(f"[TX_WAV] Loaded {len(samples)} samples ({len(samples)/8000:.1f}s) from {tx_wav_path}")
+                except Exception as e:
+                    print(f"[WARN] Failed to load TX WAV: {e}")
 
             self._handshake_started = False
             self._pending_handshake = True
@@ -346,21 +383,38 @@ class Adapter:
                      encrypted = self._noise.encrypt_sdu(b"", payload)
                      self._audio_stack.tx_enqueue(encrypted)
                 
-                # Fallback: If no real audio and queue empty, generate mock traffic
+                # Fallback: If no real audio and queue empty, generate traffic from WAV or mock
                 # This ensures simulation has data to transmit
                 elif not getattr(self, "_use_real_audio", False):
-                    # Generate mock voice frame every 40ms (25 pps)
+                    # Generate voice frame every 40ms (25 pps)
                     if t_ms % 40 == 0:
                         try:
-                            # Create recognizable mock pattern (counter + random)
-                            ctr = (t_ms // 40) & 0xFF
-                            payload = bytes([ctr]) + os.urandom(39)
+                            # Use WAV file samples if available
+                            if getattr(self, "_tx_wav_samples", None) is not None:
+                                # Read 40 bytes (20 samples) from WAV, loop if exhausted
+                                chunk_samples = 20  # 20 int16 samples = 40 bytes
+                                start = self._tx_wav_pos
+                                end = start + chunk_samples
+                                if end >= len(self._tx_wav_samples):
+                                    # Loop back to beginning
+                                    self._tx_wav_pos = 0
+                                    start = 0
+                                    end = chunk_samples
+                                    
+                                payload = self._tx_wav_samples[start:end].tobytes()
+                                self._tx_wav_pos = end
+                            else:
+                                # Fallback: Create recognizable mock pattern
+                                ctr = (t_ms // 40) & 0xFF
+                                payload = bytes([ctr]) + os.urandom(39)
+                            
                             encrypted = self._noise.encrypt_sdu(b"", payload)
                             if self._audio_stack.tx_enqueue(encrypted):
                                 if t_ms % 1000 == 0:
-                                    self._audio_logger("debug", f"[MockGen] Auto-generated voice frame t={t_ms}")
+                                    src = "WAV" if getattr(self, "_tx_wav_samples", None) is not None else "mock"
+                                    self._audio_logger("debug", f"[{src}] Sent voice frame t={t_ms}")
                         except Exception as e:
-                            print(f"[ERROR] Mock gen failed: {e}")
+                            print(f"[ERROR] TX gen failed: {e}")
 
                 if self._audio_tx_sdu_q:
                     sdu = self._audio_tx_sdu_q.popleft()
@@ -478,36 +532,44 @@ class Adapter:
                 decrypted = self._noise.decrypt_sdu(b"", frame)
                 print(f"[{self.side}] Decryption SUCCESS: len={len(decrypted)}")
                 
-                # Check if it looks like our mock voice payload (40 or more bytes)
+                # The decrypted payload is 40 bytes = 20 int16 samples
+                # This represents ~2.5ms of audio at 8kHz
+                # But the modem frame period is ~76ms (time to transmit one frame)
+                # We need to time-stretch to maintain proper playback timing
+                
                 if len(decrypted) >= 40:
-                    # MOCK: Convert decrypted bits back to PCM (repeating to fill 160 samples)
-                    # For visualization/listening, we treat the bytes as PCM (likely white noise or tone if mock)
-                    # Ideally we would have a codec, but for "hearing something", raw bytes->int16 is enough noise.
-                    voice_pcm = (decrypted * (320 // len(decrypted) + 1))[:320]
-                    pcm_buf = np.frombuffer(voice_pcm, dtype=np.int16)
+                    # Parse the 20 samples from 40 bytes
+                    pcm_short = np.frombuffer(decrypted[:40], dtype=np.int16)
+                    
+                    # Time-stretch: repeat/interpolate to fill the 76ms gap
+                    # 76ms at 8kHz = 608 samples
+                    # Simple approach: repeat the 20-sample pattern ~30 times
+                    MODEM_FRAME_MS = 76
+                    samples_needed = int(MODEM_FRAME_MS * 8)  # 608 samples
+                    
+                    # Repeat the short sample pattern to fill the frame period
+                    pcm_stretched = np.tile(pcm_short, samples_needed // len(pcm_short) + 1)[:samples_needed]
+                    
+                    # Store for gap filling
+                    self._last_decoded_pcm = pcm_stretched
                     
                     if getattr(self, "_use_real_audio", False):
-                        self._real_audio.write(pcm_buf)
+                        self._real_audio.write(pcm_stretched)
                     
                     # Real-time audio playback (if enabled)
                     if getattr(self, "_audio_output", None):
                         try:
-                            self._audio_output.write(pcm_buf.tobytes())
+                            self._audio_output.write(pcm_stretched.tobytes())
                         except Exception as e:
                             print(f"[AUDIO] Playback error: {e}")
                     
-                    # Also write to WAV if configured
+                    # Write to WAV file for offline playback
                     if self._rx_wav_file:
-                        data = pcm_buf.tobytes()
-                        print(f"[WAV_DEBUG] Writing {len(data)} bytes to WAV at t={t_ms}") 
+                        data = pcm_stretched.tobytes()
+                        print(f"[WAV_DEBUG] Writing {len(data)} bytes ({len(pcm_stretched)} samples) to WAV at t={t_ms}")
                         try:
                             self._rx_wav_file.writeframes(data)
-                            # Force physical write if possible needed for debugging 44-byte issue
-                            try:
-                                if hasattr(self._rx_wav_file, '_file'):
-                                    self._rx_wav_file._file.flush()
-                            except:
-                                pass
+                            self._last_rx_audio_write_t = t_ms
                         except Exception as e:
                             print(f"[WAV_ERROR] Write failed: {e}")
                 else:
