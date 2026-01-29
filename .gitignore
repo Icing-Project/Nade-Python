@@ -1,6 +1,14 @@
 runs
 .idea
 
+# Build artifacts for liquid-dsp (but NOT nade/_vendor which contains bundled DLLs)
+build_temp/
+
+# Allow bundled DLLs and extensions in vendor directory (override global ignores below)
+!nade/_vendor/**/*.dll
+!nade/_vendor/**/*.pyd
+!nade/_vendor/**/*.so
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

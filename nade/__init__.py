@@ -1,3 +1,13 @@
+"""Nade Protocol Implementation."""
+
+import sys
+from pathlib import Path
+
+# Add vendored packages to sys.path for Windows bundled liquid-dsp
+_vendor_path = Path(__file__).parent / "_vendor"
+if _vendor_path.exists() and str(_vendor_path) not in sys.path:
+    sys.path.insert(0, str(_vendor_path))
+
 from .audio import AudioStack
 from .crypto.noise_wrapper import NoiseXKWrapper
 from .modems import LiquidFourFSKModem, LiquidBFSKModem

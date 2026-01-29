@@ -22,14 +22,27 @@ class _LiquidFSKLibrary:
         try:
             module = importlib.import_module("liquid")
         except ImportError as exc:  # pragma: no cover
-            self.log("RuntimeError", f"liquid-dsp is required for the audio modem backend; install the 'liquid-dsp' wheel")
-            raise RuntimeError(
-                "liquid-dsp is required for the audio modem backend; install the 'liquid-dsp' wheel"
-            ) from exc
+            # On Windows, try to use bundled version
+            import sys
+            vendor_path = Path(__file__).parent.parent / "_vendor"
+
+            if vendor_path.exists() and str(vendor_path) not in sys.path:
+                sys.path.insert(0, str(vendor_path))
+                try:
+                    module = importlib.import_module("liquid")
+                except ImportError:
+                    raise RuntimeError(
+                        "liquid-dsp is not available. "
+                        "On Linux/macOS: pip install liquid-dsp. "
+                        "On Windows: Ensure nade/_vendor/liquid/ contains the bundled DLLs."
+                    ) from exc
+            else:
+                raise RuntimeError(
+                    "liquid-dsp is required for the audio modem backend; install the 'liquid-dsp' wheel"
+                ) from exc
 
         lib_path = self._discover_shared_library(Path(module.__file__).resolve())
         if lib_path is None:
-            self.log("RuntimeError", f"Unable to locate the libliquid shared library next to the python extension")
             raise RuntimeError("Unable to locate the libliquid shared library next to the python extension")
 
         self.lib = ctypes.CDLL(str(lib_path))
