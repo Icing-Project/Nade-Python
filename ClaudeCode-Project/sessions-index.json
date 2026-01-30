@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "sessionId": "0f10d76b-de1a-45d2-95d6-6b1f5074a96d",
+      "fullPath": "/home/stcb/.claude/projects/-var-home-stcb-Desktop-Icing-Nade-Python/0f10d76b-de1a-45d2-95d6-6b1f5074a96d.jsonl",
+      "fileMtime": 1769679845434,
+      "firstPrompt": "Deeply analyze the whole repo, deeply understand its inner workings and its goals. Come back to ask me any precision or uncertainety to sharpen your understanding.  Our objective is to extract Nade's…",
+      "summary": "Refactor Nade state machine into pure functional architecture",
+      "messageCount": 28,
+      "created": "2026-01-25T16:11:24.269Z",
+      "modified": "2026-01-25T21:37:48.855Z",
+      "gitBranch": "State-Machine",
+      "projectPath": "/var/home/stcb/Desktop/Icing/Nade-Python",
+      "isSidechain": false
+    }
+  ],
+  "originalPath": "/var/home/stcb/Desktop/Icing/Nade-Python"
+}

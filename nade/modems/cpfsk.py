@@ -19,17 +19,36 @@ class _LiquidFSKLibrary:
     _instance: Optional["_LiquidFSKLibrary"] = None
 
     def __init__(self) -> None:
+        import sys as _sys
         try:
             module = importlib.import_module("liquid")
         except ImportError as exc:  # pragma: no cover
-            self.log("RuntimeError", f"liquid-dsp is required for the audio modem backend; install the 'liquid-dsp' wheel")
-            raise RuntimeError(
-                "liquid-dsp is required for the audio modem backend; install the 'liquid-dsp' wheel"
-            ) from exc
+            # On Windows, try to use bundled version
+            if _sys.platform == "win32":
+                vendor_path = Path(__file__).parent.parent / "_vendor"
+
+                if vendor_path.exists() and str(vendor_path) not in _sys.path:
+                    _sys.path.insert(0, str(vendor_path))
+                    try:
+                        module = importlib.import_module("liquid")
+                    except ImportError:
+                        raise RuntimeError(
+                            "liquid-dsp is not available. "
+                            "On Windows: Ensure nade/_vendor/liquid/ contains the bundled DLLs."
+                        ) from exc
+                else:
+                    raise RuntimeError(
+                        "liquid-dsp is required for the audio modem backend. "
+                        "On Windows: Ensure nade/_vendor/liquid/ contains the bundled DLLs."
+                    ) from exc
+            else:
+                raise RuntimeError(
+                    "liquid-dsp is required for the audio modem backend. "
+                    "Install with: pip install liquid-dsp"
+                ) from exc
 
         lib_path = self._discover_shared_library(Path(module.__file__).resolve())
         if lib_path is None:
-            self.log("RuntimeError", f"Unable to locate the libliquid shared library next to the python extension")
             raise RuntimeError("Unable to locate the libliquid shared library next to the python extension")
 
         self.lib = ctypes.CDLL(str(lib_path))
@@ -129,21 +148,34 @@ class _LiquidFSKLibrary:
 
     @staticmethod
     def _discover_shared_library(root: Path) -> Optional[Path]:
+        import sys
         candidates: List[Path] = []
 
-        if root.is_file() and root.suffix in {".so", ".pyd", ".dll"}:
+        # Determine platform-appropriate extensions and patterns
+        if sys.platform == "win32":
+            valid_extensions = {".dll", ".pyd"}
+            patterns = ["liquid*.dll"]
+        elif sys.platform == "darwin":
+            valid_extensions = {".dylib", ".so"}
+            patterns = ["libliquid*.dylib", "libliquid*.so"]
+        else:  # Linux and other Unix-like
+            valid_extensions = {".so"}
+            # Include libliquidtmp which is what liquid-dsp pip package uses
+            patterns = ["libliquid*.so", "libliquid*.so.*", "libliquidtmp*.so", "libliquidtmp*.so.*"]
+
+        if root.is_file() and root.suffix in valid_extensions:
             candidates.append(root)
 
         parent = root.parent if root.is_file() else root
-        candidates.extend(parent.glob("libliquid*.so"))
-        candidates.extend(parent.glob("libliquid*.dylib"))
-        candidates.extend(parent.glob("liquid*.dll"))
+        for pattern in patterns:
+            candidates.extend(parent.glob(pattern))
 
-        lib_dir = parent / "liquid_dsp.libs"
-        if lib_dir.exists():
-            candidates.extend(lib_dir.glob("libliquid*.so"))
-            candidates.extend(lib_dir.glob("libliquid*.dylib"))
-            candidates.extend(lib_dir.glob("liquid*.dll"))
+        # Check common library subdirectories
+        for lib_subdir in ["liquid_dsp.libs", "lib", ".libs"]:
+            lib_dir = parent / lib_subdir
+            if lib_dir.exists():
+                for pattern in patterns:
+                    candidates.extend(lib_dir.glob(pattern))
 
         return next((p for p in candidates if p.exists()), None)
 

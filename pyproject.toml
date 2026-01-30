@@ -15,7 +15,8 @@ dependencies = [
     "dissononce>=0.34.3",
     "PyYAML>=6.0",
     "cffi>=1.17.0",
-    "liquid-dsp>=1.6.0",
+    # liquid-dsp optional on Windows (bundled), required elsewhere
+    "liquid-dsp>=1.6.0 ; sys_platform != 'win32'",
     "pytest>=8.3.3",
 ]
 
@@ -25,6 +26,9 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["nade", "nade.*", "adapter", "adapter.*"]
+
+[tool.setuptools.package-data]
+nade = ["_vendor/**/*", "_vendor/liquid/*"]
 
 [project.entry-points."drybox.adapters"]
 # DryBox v1 currently loads adapters via module path specs (path/to/file.py:Class).
