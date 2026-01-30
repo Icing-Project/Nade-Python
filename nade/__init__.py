@@ -23,6 +23,9 @@ from .engine import NadeEngine
 # Transport abstraction
 from .transport import ITransport, AudioTransport
 
+# NDA Adapter (for C++ integration)
+from .adapters import NDAAdapter
+
 # Backwards-compatible alias for the previous FourFSK modem name
 FourFSKModem = LiquidFourFSKModem
 
@@ -43,6 +46,8 @@ __all__ = [
     "LiquidBFSKModem",
     "LiquidFourFSKModem",
     "FourFSKModem",
+    # Adapters (NDA integration)
+    "NDAAdapter",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"  # Updated for NDA integration
