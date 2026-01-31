@@ -72,7 +72,8 @@ class NDAAdapter:
         x25519_peer_public: bytes,
         nda_sample_rate: int = 48000,
         modem_mode: str = "4fsk",
-        is_initiator: bool = True,
+        is_initiator: bool = True,  # Deprecated (now determined by discovery)
+        enable_discovery: bool = True,  # NEW: Auto-start discovery
     ):
         """
         Initialize NDA adapter.
@@ -141,15 +142,73 @@ class NDAAdapter:
         self.is_transmitting = False
         self.session_started = False
         self._is_initiator = is_initiator
+        self._enable_discovery = enable_discovery
 
-        # Start session
-        self._start_session()
+        # Timer tracking for discovery/handshake
+        self._active_timers: Dict[str, float] = {}
+
+        # Start discovery or session
+        if enable_discovery:
+            self._start_discovery()
+        else:
+            # Legacy mode: immediate handshake with explicit role
+            self._start_session()
 
     def _start_session(self) -> None:
         """Start Nade session (initiator or responder)."""
         role = "initiator" if self._is_initiator else "responder"
         self.engine.feed_event(StartSession(role=role))
         self.session_started = True
+
+    def _start_discovery(self) -> None:
+        """Start automatic peer discovery."""
+        from nade.protocol.events import StartDiscovery
+        self.engine.feed_event(StartDiscovery())
+        self.session_started = False
+
+    def restart_discovery(self) -> None:
+        """Public method to restart automatic peer discovery (called from C++)."""
+        self._start_discovery()
+
+    def _process_timers(self) -> None:
+        """Process pending timers (discovery, handshake timeout)."""
+        from nade.protocol.events import TimerExpired, PingTimerExpired
+        import time
+
+        current_time = time.time() * 1000  # milliseconds
+
+        # Get pending timers from engine
+        pending = self.engine.get_pending_timers()
+        for timer_id, timer_req in pending.items():
+            if timer_id not in self._active_timers:
+                # Start new timer
+                self._active_timers[timer_id] = current_time + timer_req.duration_ms
+                self.engine.acknowledge_timer(timer_id, int(current_time))
+
+        # Clean up cancelled timers from our tracking dict
+        for timer_id in list(self._active_timers.keys()):
+            if self.engine.is_timer_cancelled(timer_id):
+                del self._active_timers[timer_id]
+                self.engine.clear_cancelled_timer(timer_id)
+
+        # Check for expired timers
+        expired_timers = []
+        for timer_id, expiry_time in list(self._active_timers.items()):
+            if current_time >= expiry_time:
+                expired_timers.append(timer_id)
+
+        # Fire expired timers
+        for timer_id in expired_timers:
+            if not self.engine.is_timer_cancelled(timer_id):
+                # Special handling for ping_discovery timer
+                if timer_id == "ping_discovery":
+                    self.engine.feed_event(PingTimerExpired())
+                else:
+                    self.engine.feed_event(TimerExpired(timer_id=timer_id))
+
+            # Remove from active timers
+            del self._active_timers[timer_id]
+            self.engine.clear_cancelled_timer(timer_id)
 
     def _on_app_data(self, data: bytes) -> None:
         """Callback when decrypted data is received."""
@@ -235,6 +294,12 @@ class NDAAdapter:
             FSK audio at NDA sample rate (float32, range [-1.0, +1.0])
             Returns zeros if no data to transmit.
         """
+        # Poll modem for ping/pong events
+        self.engine.poll_modem_events()
+
+        # Process pending timers (discovery, handshake timeout, etc.)
+        self._process_timers()
+
         # Calculate samples at 8kHz (Nade's rate)
         samples_8k = int(duration_ms * self.nade_sample_rate / 1000.0)
 
@@ -316,6 +381,35 @@ class NDAAdapter:
     def is_session_established(self) -> bool:
         """Check if Noise handshake is complete."""
         return self.engine.is_established
+
+    def get_handshake_phase(self) -> int:
+        """
+        Get handshake phase for UI display.
+
+        Returns:
+            0 = Idle
+            1 = Discovering
+            2 = Handshaking
+            3 = Established
+        """
+        from nade.protocol.state import Phase
+        phase = self.engine.state.phase
+
+        if phase == Phase.IDLE:
+            return 0
+        elif phase in (Phase.PING_DISCOVERY, Phase.AWAIT_PING_RESPONSE):
+            return 1  # Discovering
+        elif phase in (
+            Phase.HS_INITIATOR_STARTING,
+            Phase.HS_INITIATOR_AWAITING_M2,
+            Phase.HS_RESPONDER_STARTING,
+            Phase.HS_RESPONDER_AWAITING_M3,
+        ):
+            return 2  # Handshaking
+        elif phase == Phase.ESTABLISHED:
+            return 3  # Established
+        else:
+            return 0  # Unknown -> idle
 
     def get_log_messages(self) -> List[str]:
         """Get and clear log messages (for debugging)."""

@@ -259,6 +259,9 @@ class LiquidFSKModem(IModem):
         self._rx_buffer = np.zeros(0, dtype=np.complex64)
         self._analytic_tmp = np.zeros(0, dtype=np.complex64)
 
+        # Discovery ping/pong events
+        self._pending_ping_events: List[tuple[str, int]] = []
+
         self._tx_phase = 0.0
         self._rx_phase = 0.0
 
@@ -385,6 +388,12 @@ class LiquidFSKModem(IModem):
         for _ in range(n):
             out.append(self._rx_frames.popleft())
         return out
+
+    def get_pending_ping_events(self) -> List[tuple[str, int]]:
+        """Retrieve and clear pending ping/pong events."""
+        events = self._pending_ping_events.copy()
+        self._pending_ping_events.clear()
+        return events
 
     def push_tx_block(self, t_ms: int) -> Int16Block:
         out = np.empty(self.BLK, dtype=np.int16)
@@ -634,13 +643,32 @@ class LiquidFSKModem(IModem):
             
             # Verify checksum
             expected_checksum = (sum(payload) + ln) & 0xFF
-            
+
             if expected_checksum == checksum:
                 self.log("info", f"Valid frame: len={ln}, checksum=0x{checksum:02x}")
-                
+
+                # Check for NADE ping/pong frames (6-byte payload with magic)
+                if len(payload) == 6 and payload[:4] == b'\x4E\x41\x44\x45':
+                    frame_type = payload[4]
+                    ping_id = payload[5]
+
+                    if frame_type == 0x01:  # PING
+                        self._pending_ping_events.append(('ping_received', ping_id))
+                        self.log("debug", f"[CPFSK] Received PING #{ping_id}")
+                        continue  # Don't deliver to upper layers
+
+                    elif frame_type == 0x02:  # PONG
+                        self._pending_ping_events.append(('pong_received', ping_id))
+                        self.log("debug", f"[CPFSK] Received PONG #{ping_id}")
+                        continue
+
+                    # Unknown type - treat as normal encrypted frame and deliver
+                    self.log("warn", f"[CPFSK] Unknown NADE frame type: {frame_type}")
+
+                # Normal encrypted data frame
                 if len(self._rx_frames) >= self.cfg.max_rx_frames:
                     self._rx_frames.popleft()
-                
+
                 self._rx_frames.append(payload)
                 self._metric_frames_decoded += 1
                 

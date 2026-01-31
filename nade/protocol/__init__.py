@@ -15,6 +15,12 @@ from .events import (
     AppSendData,
     TimerExpired,
     LinkQualityUpdate,
+    # Discovery events
+    StartDiscovery,
+    PingReceived,
+    PongReceived,
+    PingTimerExpired,
+    ForceHandshake,
 )
 from .actions import (
     Action,
@@ -29,6 +35,9 @@ from .actions import (
     AppDeliver,
     AppNotify,
     Log,
+    # Discovery actions
+    SendPing,
+    SendPong,
 )
 from .machine import NadeProtocol
 
@@ -45,6 +54,12 @@ __all__ = [
     "AppSendData",
     "TimerExpired",
     "LinkQualityUpdate",
+    # Discovery events
+    "StartDiscovery",
+    "PingReceived",
+    "PongReceived",
+    "PingTimerExpired",
+    "ForceHandshake",
     # Actions
     "Action",
     "CryptoStartHandshake",
@@ -58,6 +73,9 @@ __all__ = [
     "AppDeliver",
     "AppNotify",
     "Log",
+    # Discovery actions
+    "SendPing",
+    "SendPong",
     # Protocol
     "NadeProtocol",
 ]

@@ -30,6 +30,38 @@ class StopSession(Event):
     reason: str = "user_request"
 
 
+# === Discovery Events ===
+
+@dataclass(frozen=True)
+class StartDiscovery(Event):
+    """Start automatic peer discovery (default mode)."""
+    pass
+
+
+@dataclass(frozen=True)
+class PingReceived(Event):
+    """Received a discovery PING from peer."""
+    ping_id: int
+
+
+@dataclass(frozen=True)
+class PongReceived(Event):
+    """Received a PONG response from peer."""
+    ping_id: int
+
+
+@dataclass(frozen=True)
+class PingTimerExpired(Event):
+    """Time to send next discovery ping."""
+    pass
+
+
+@dataclass(frozen=True)
+class ForceHandshake(Event):
+    """Manual override: skip discovery, force role selection."""
+    role: Literal["initiator", "responder"]
+
+
 # === Transport Events ===
 
 @dataclass(frozen=True)

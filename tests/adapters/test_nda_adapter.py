@@ -24,11 +24,25 @@ requires_modem = pytest.mark.skipif(
     reason="liquid-dsp library not available on this platform"
 )
 
-from nade.adapters.nda_adapter import (
-    NDAAdapter,
-    _bytes_to_keypair,
-    _bytes_to_public_key,
+from nade.adapters.nda_adapter import NDAAdapter
+
+# Import internal helpers from the actual module via nade.adapters
+import sys
+from pathlib import Path
+_project_root = Path(__file__).parent.parent.parent
+_adapters_path = _project_root / "adapters"
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
+import importlib.util
+_spec = importlib.util.spec_from_file_location(
+    "adapters.nda_adapter_helpers",
+    _adapters_path / "nda_adapter.py"
 )
+_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_module)
+_bytes_to_keypair = _module._bytes_to_keypair
+_bytes_to_public_key = _module._bytes_to_public_key
 
 
 # Generate test keys using X25519

@@ -33,6 +33,8 @@ from .protocol import (
     AppDeliver,
     AppNotify,
     Log,
+    SendPing,
+    SendPong,
 )
 from .transport.interface import ITransport
 from .crypto.noise_wrapper import NoiseXKWrapper
@@ -188,6 +190,18 @@ class NadeEngine:
                 self._cancelled_timers.add(timer_id)
                 self._logger("debug", f"[Engine] Timer cancelled: {timer_id}")
 
+            case SendPing(ping_id):
+                # Encode PING frame: NADE magic + type 0x01 + ping_id
+                payload = b'\x4E\x41\x44\x45' + bytes([0x01, ping_id])
+                self._transport.queue_tx_sdu(payload)
+                self._logger("debug", f"[Engine] Sent PING #{ping_id}")
+
+            case SendPong(ping_id):
+                # Encode PONG frame: NADE magic + type 0x02 + ping_id
+                payload = b'\x4E\x41\x44\x45' + bytes([0x02, ping_id])
+                self._transport.queue_tx_sdu(payload)
+                self._logger("debug", f"[Engine] Sent PONG #{ping_id}")
+
             case _:
                 self._logger("warn", f"[Engine] Unknown action: {action}")
 
@@ -227,3 +241,23 @@ class NadeEngine:
     def feed_rx_samples(self, pcm, t_ms: int) -> list[bytes]:
         """Feed PCM samples to transport (adapter calls this for RX)."""
         return self._transport.feed_rx_samples(pcm, t_ms)
+
+    def poll_modem_events(self) -> None:
+        """
+        Poll modem for ping/pong events and feed to protocol.
+
+        Call this periodically from adapter's worker loop.
+        """
+        from .protocol.events import PingReceived, PongReceived
+
+        # Access modem through transport
+        modem = getattr(self._transport, 'modem', None)
+        if modem is None:
+            return
+
+        events = modem.get_pending_ping_events()
+        for event_type, ping_id in events:
+            if event_type == 'ping_received':
+                self.feed_event(PingReceived(ping_id=ping_id))
+            elif event_type == 'pong_received':
+                self.feed_event(PongReceived(ping_id=ping_id))

@@ -17,6 +17,10 @@ class Phase(Enum):
     # Initial state - no session active
     IDLE = auto()
 
+    # Discovery phases
+    PING_DISCOVERY = auto()       # Sending pings, awaiting response
+    AWAIT_PING_RESPONSE = auto()  # Peer pinged us, awaiting their PONG to our PING
+
     # Handshake phases (initiator path)
     HS_INITIATOR_STARTING = auto()      # Starting handshake, will send M1
     HS_INITIATOR_AWAITING_M2 = auto()   # M1 sent, waiting for M2
@@ -54,6 +58,11 @@ class NadeState:
     # Handshake progress tracking
     handshake_messages_sent: int = 0
     handshake_messages_received: int = 0
+
+    # Discovery state
+    ping_counter: int = 0           # Incrementing ping ID (wraps at 256)
+    peer_ping_id: int | None = None # Last ping ID received from peer
+    discovery_mode: bool = True     # Auto-discovery enabled
 
     # Pending outbound data (encrypted SDUs waiting for transport capacity)
     tx_pending: tuple[bytes, ...] = field(default_factory=tuple)

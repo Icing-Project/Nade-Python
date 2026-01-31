@@ -56,6 +56,20 @@ class TransportFlushHandshake(Action):
     pass
 
 
+# === Discovery Actions ===
+
+@dataclass(frozen=True)
+class SendPing(Action):
+    """Queue PING frame for transmission."""
+    ping_id: int
+
+
+@dataclass(frozen=True)
+class SendPong(Action):
+    """Queue PONG frame acknowledging peer's ping."""
+    ping_id: int
+
+
 # === Timer Actions ===
 
 @dataclass(frozen=True)

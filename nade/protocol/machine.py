@@ -22,6 +22,11 @@ from .events import (
     AppSendData,
     TimerExpired,
     LinkQualityUpdate,
+    StartDiscovery,
+    PingReceived,
+    PongReceived,
+    PingTimerExpired,
+    ForceHandshake,
 )
 from .actions import (
     Action,
@@ -36,6 +41,8 @@ from .actions import (
     AppDeliver,
     AppNotify,
     Log,
+    SendPing,
+    SendPong,
 )
 
 
@@ -241,11 +248,189 @@ def _handle_established_tx_capacity(state: NadeState, event: TransportTxCapacity
 
 
 # =============================================================================
+# Discovery handlers
+# =============================================================================
+
+def _handle_idle_start_discovery(state: NadeState, event: StartDiscovery) -> StepResult:
+    """IDLE + StartDiscovery -> begin automatic peer discovery."""
+    return (
+        replace(state, phase=Phase.PING_DISCOVERY, ping_counter=0, discovery_mode=True),
+        [
+            Log("info", "[NadeProtocol] Starting discovery mode"),
+            SendPing(ping_id=0),
+            TimerStart("ping_discovery", 1000),  # 1 second
+        ]
+    )
+
+
+def _handle_ping_discovery_timer(state: NadeState, event: PingTimerExpired) -> StepResult:
+    """PING_DISCOVERY + PingTimerExpired -> send next ping (indefinitely)."""
+    new_ping_id = (state.ping_counter + 1) % 256  # Wrap at 256
+    return (
+        replace(state, ping_counter=new_ping_id),
+        [
+            SendPing(ping_id=new_ping_id),
+            TimerStart("ping_discovery", 1000),  # Re-arm timer
+        ]
+    )
+
+
+def _handle_ping_discovery_rx_ping(state: NadeState, event: PingReceived) -> StepResult:
+    """PING_DISCOVERY + PingReceived -> send PONG, wait for their PONG."""
+    return (
+        replace(state, phase=Phase.AWAIT_PING_RESPONSE, peer_ping_id=event.ping_id),
+        [
+            Log("info", f"[NadeProtocol] Received PING #{event.ping_id}, sending PONG"),
+            SendPong(ping_id=event.ping_id),
+            TimerCancel("ping_discovery"),
+            TimerStart("pong_timeout", 5000),  # Wait 5s for their PONG
+        ]
+    )
+
+
+def _handle_ping_discovery_rx_pong(state: NadeState, event: PongReceived) -> StepResult:
+    """PING_DISCOVERY + PongReceived -> become RESPONDER (peer initiated first)."""
+    return (
+        replace(
+            state,
+            phase=Phase.HS_RESPONDER_STARTING,
+            role="responder",
+            handshake_messages_sent=0,
+            handshake_messages_received=0,
+        ),
+        [
+            Log("info", f"[NadeProtocol] Received PONG #{event.ping_id}, becoming RESPONDER"),
+            TimerCancel("ping_discovery"),
+            CryptoStartHandshake(is_initiator=False),
+            TimerStart("handshake_timeout", 10000),
+        ]
+    )
+
+
+def _handle_await_pong_rx_pong(state: NadeState, event: PongReceived) -> StepResult:
+    """AWAIT_PING_RESPONSE + PongReceived -> become INITIATOR (we initiated first)."""
+    return (
+        replace(
+            state,
+            phase=Phase.HS_INITIATOR_STARTING,
+            role="initiator",
+            handshake_messages_sent=0,
+            handshake_messages_received=0,
+        ),
+        [
+            Log("info", f"[NadeProtocol] Received PONG #{event.ping_id}, becoming INITIATOR"),
+            TimerCancel("pong_timeout"),
+            CryptoStartHandshake(is_initiator=True),
+            TransportFlushHandshake(),
+            TimerStart("handshake_timeout", 10000),
+        ]
+    )
+
+
+def _handle_await_pong_rx_ping(state: NadeState, event: PingReceived) -> StepResult:
+    """
+    AWAIT_PING_RESPONSE + PingReceived -> collision!
+
+    Resolve using ping_id comparison:
+    - Higher ping_id becomes INITIATOR
+    - Lower ping_id becomes RESPONDER
+    - If equal, both sides resend PING with incremented ID (retry collision)
+    """
+    our_id = state.ping_counter
+    their_id = event.ping_id
+
+    if their_id > our_id:
+        # Their ping_id is higher -> we become RESPONDER
+        return (
+            replace(
+                state,
+                phase=Phase.HS_RESPONDER_STARTING,
+                role="responder",
+                peer_ping_id=their_id,
+                handshake_messages_sent=0,
+                handshake_messages_received=0,
+            ),
+            [
+                Log("info", f"[NadeProtocol] Collision: their_id={their_id} > our_id={our_id}, becoming RESPONDER"),
+                SendPong(ping_id=their_id),
+                TimerCancel("pong_timeout"),
+                CryptoStartHandshake(is_initiator=False),
+                TimerStart("handshake_timeout", 10000),
+            ]
+        )
+    elif their_id < our_id:
+        # Our ping_id is higher -> we become INITIATOR
+        return (
+            replace(
+                state,
+                phase=Phase.HS_INITIATOR_STARTING,
+                role="initiator",
+                peer_ping_id=their_id,
+                handshake_messages_sent=0,
+                handshake_messages_received=0,
+            ),
+            [
+                Log("info", f"[NadeProtocol] Collision: our_id={our_id} > their_id={their_id}, becoming INITIATOR"),
+                SendPong(ping_id=their_id),
+                TimerCancel("pong_timeout"),
+                CryptoStartHandshake(is_initiator=True),
+                TransportFlushHandshake(),
+                TimerStart("handshake_timeout", 10000),
+            ]
+        )
+    else:
+        # Equal ping_ids - retry with incremented ID to break tie
+        # Use random increment (1-10) to reduce chance of repeated collision
+        import random
+        new_ping_id = (our_id + random.randint(1, 10)) % 256
+        return (
+            replace(
+                state,
+                phase=Phase.PING_DISCOVERY,
+                ping_counter=new_ping_id,
+                peer_ping_id=their_id,
+            ),
+            [
+                Log("info", f"[NadeProtocol] Collision tie: both ping_id={our_id}, retrying with new_id={new_ping_id}"),
+                SendPong(ping_id=their_id),
+                TimerCancel("pong_timeout"),
+                SendPing(ping_id=new_ping_id),
+                TimerStart("ping_discovery", 1000),
+            ]
+        )
+
+
+# =============================================================================
 # Global handlers (phase-agnostic)
 # =============================================================================
 
+def _handle_pong_timeout(state: NadeState, event: TimerExpired) -> StepResult:
+    """AWAIT_PING_RESPONSE + pong_timeout -> return to discovery mode."""
+    new_ping_id = (state.ping_counter + 1) % 256
+    return (
+        replace(
+            state,
+            phase=Phase.PING_DISCOVERY,
+            ping_counter=new_ping_id,
+            peer_ping_id=None,
+        ),
+        [
+            Log("warn", f"[NadeProtocol] PONG timeout, returning to discovery with ping_id={new_ping_id}"),
+            SendPing(ping_id=new_ping_id),
+            TimerStart("ping_discovery", 1000),
+        ]
+    )
+
+
 def _handle_timer_expired(state: NadeState, event: TimerExpired) -> StepResult:
     """Handle timer expiry (any phase)."""
+
+    if event.timer_id == "pong_timeout":
+        # Delegate to specific handler based on current phase
+        if state.phase == Phase.AWAIT_PING_RESPONSE:
+            return _handle_pong_timeout(state, event)
+        # Ignore pong_timeout in other phases
+        return (state, [])
 
     if event.timer_id == "handshake_timeout":
         # Handshake timeout - return to IDLE with error
@@ -288,6 +473,52 @@ def _handle_stop_session(state: NadeState, event: StopSession) -> StepResult:
     )
 
 
+def _handle_any_phase_force_handshake(state: NadeState, event: ForceHandshake) -> StepResult:
+    """
+    ANY PHASE + ForceHandshake -> skip discovery, force role.
+
+    This is a manual override that bypasses discovery.
+    """
+    # Cancel any pending timers
+    actions = [
+        Log("warn", f"[NadeProtocol] Manual override: forcing role={event.role}"),
+        TimerCancel("ping_discovery"),
+        TimerCancel("pong_timeout"),
+    ]
+
+    if event.role == "initiator":
+        return (
+            replace(
+                state,
+                phase=Phase.HS_INITIATOR_STARTING,
+                role="initiator",
+                discovery_mode=False,
+                handshake_messages_sent=0,
+                handshake_messages_received=0,
+            ),
+            actions + [
+                CryptoStartHandshake(is_initiator=True),
+                TransportFlushHandshake(),
+                TimerStart("handshake_timeout", state.handshake_timeout_ms),
+            ]
+        )
+    else:  # responder
+        return (
+            replace(
+                state,
+                phase=Phase.HS_RESPONDER_STARTING,
+                role="responder",
+                discovery_mode=False,
+                handshake_messages_sent=0,
+                handshake_messages_received=0,
+            ),
+            actions + [
+                CryptoStartHandshake(is_initiator=False),
+                TimerStart("handshake_timeout", state.handshake_timeout_ms),
+            ]
+        )
+
+
 # =============================================================================
 # Handler dispatch tables
 # =============================================================================
@@ -296,6 +527,14 @@ def _handle_stop_session(state: NadeState, event: StopSession) -> StepResult:
 _HANDLERS: dict[tuple, Callable[[NadeState, Event], StepResult]] = {
     # IDLE
     ("Phase", Phase.IDLE, StartSession): _handle_idle_start_session,
+    ("Phase", Phase.IDLE, StartDiscovery): _handle_idle_start_discovery,
+
+    # Discovery
+    ("Phase", Phase.PING_DISCOVERY, PingTimerExpired): _handle_ping_discovery_timer,
+    ("Phase", Phase.PING_DISCOVERY, PingReceived): _handle_ping_discovery_rx_ping,
+    ("Phase", Phase.PING_DISCOVERY, PongReceived): _handle_ping_discovery_rx_pong,
+    ("Phase", Phase.AWAIT_PING_RESPONSE, PongReceived): _handle_await_pong_rx_pong,
+    ("Phase", Phase.AWAIT_PING_RESPONSE, PingReceived): _handle_await_pong_rx_ping,
 
     # Initiator handshake
     ("Phase", Phase.HS_INITIATOR_STARTING, TransportTxCapacity): _handle_hs_initiator_starting_tx_capacity,
@@ -317,4 +556,5 @@ _HANDLERS: dict[tuple, Callable[[NadeState, Event], StepResult]] = {
 _GLOBAL_HANDLERS: dict[type, Callable[[NadeState, Event], StepResult]] = {
     TimerExpired: _handle_timer_expired,
     StopSession: _handle_stop_session,
+    ForceHandshake: _handle_any_phase_force_handshake,
 }
