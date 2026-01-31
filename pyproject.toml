@@ -12,6 +12,7 @@ requires-python = ">=3.11"
 dependencies = [
     "cryptography>=45.0.7",
     "numpy>=2.3.3",
+    "scipy>=1.11.0",
     "dissononce>=0.34.3",
     "PyYAML>=6.0",
     "cffi>=1.17.0",
@@ -25,7 +26,7 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["nade", "nade.*", "adapter", "adapter.*"]
+include = ["nade", "nade.*", "adapters", "adapters.*"]
 
 [tool.setuptools.package-data]
 nade = ["_vendor/**/*", "_vendor/liquid/*"]
@@ -33,7 +34,7 @@ nade = ["_vendor/**/*", "_vendor/liquid/*"]
 [project.entry-points."drybox.adapters"]
 # DryBox v1 currently loads adapters via module path specs (path/to/file.py:Class).
 # Keep entry point for future discovery compatibility, pointing to the actual module path.
-nade-python = "adapter.drybox_adapter:Adapter"
+nade-python = "adapters.drybox_adapter:Adapter"
 
 # (optionnel selon runner)
 [project.entry-points."nade.dev"]

@@ -422,8 +422,8 @@ Use DryBox scenarios for full system testing:
 ```bash
 uv run drybox-run \
   --scenario audio_isolated_loop.yaml \
-  --left adapter.drybox_adapter:Adapter \
-  --right adapter.drybox_adapter:Adapter
+  --left adapters.drybox_adapter:Adapter \
+  --right adapters.drybox_adapter:Adapter
 ```
 
 ---

@@ -64,7 +64,7 @@ uv pip install -e ../DryBox
 
 Run in the DryBox CLI with the Nade adapter:
 ```bash
-uv drybox-run --scenario [Your Scenario] --left adapter.drybox_adapter:Adapter --right adapter.drybox_adapter:Adapter --out runs/[Your run name]
+uv drybox-run --scenario [Your Scenario] --left adapters.drybox_adapter:Adapter --right adapters.drybox_adapter:Adapter --out runs/[Your run name]
 ```
 
 Or, preferred, run the GUI:

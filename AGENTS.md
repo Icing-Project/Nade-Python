@@ -2,13 +2,13 @@
 
 ## Project Structure & Module Organization
 - `nade/` hosts the protocol stack: `audio.py` orchestrates modem selection, `crypto/` wraps Noise building blocks, `fec/` and `modems/` handle signal processing, and `preprocessing/` stores reusable helpers.
-- `adapter/` exposes the DryBox integration; `drybox_adapter.py` binds byte and audio modes while `modes/` provides runnable presets.
+- `adapters/` exposes the DryBox integration and external adapters; `drybox_adapter.py` binds byte and audio modes, `nda_adapter.py` provides C++ plugin integration.
 - `runs/` captures local experiments; prune noisy artifacts before committing.
 
 ## Build, Test, and Development Commands
 - `uv sync` installs the locked Python 3.11 dependency set.
 - `uv run pip install -e .` publishes the package locally so DryBox discovers `nade-python`.
-- `uv run python -m adapter.drybox_adapter` performs a quick import and smoke check of the adapter entry points.
+- `uv run python -m adapters.drybox_adapter` performs a quick import and smoke check of the adapter entry points.
 
 ## DryBox Testing Procedure
 - Prereqs:
