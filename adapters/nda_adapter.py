@@ -25,11 +25,11 @@ import numpy as np
 from scipy import signal
 
 # Nade components
-from ..audio import AudioStack
-from ..crypto.noise_wrapper import NoiseXKWrapper
-from ..transport import AudioTransport
-from ..engine import NadeEngine
-from ..protocol import StartSession, StopSession, AppSendData, TransportRxReady
+from nade.audio import AudioStack
+from nade.crypto.noise_wrapper import NoiseXKWrapper
+from nade.transport import AudioTransport
+from nade.engine import NadeEngine
+from nade.protocol import StartSession, StopSession, AppSendData, TransportRxReady
 
 # Dissononce key types
 from dissononce.dh.keypair import KeyPair
